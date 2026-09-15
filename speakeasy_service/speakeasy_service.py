@@ -139,14 +139,22 @@ class Speakeasy(ServiceBase):
             result.add_section(net_table)
 
         top_level_errors = report.get("errors") or []
-        ep_errors = [ep["error"] for ep in entry_points if ep.get("error")]
+        ep_errors = [(i, ep) for i, ep in enumerate(entry_points) if ep.get("error")]
         if top_level_errors or ep_errors:
-            error_section = ResultSection(
-                "Emulation errors encountered",
-                body=f"{len(top_level_errors)} session-level error(s) and {len(ep_errors)} "
-                     "entry-point error(s) were recorded -- results reflect only what was "
-                     "successfully emulated before each error. See the supplementary report for details.",
-            )
+            lines = []
+            for i, ep in ep_errors:
+                err = ep["error"]
+                lines.append(
+                    f"Entry point {i} ({ep.get('ep_type', 'unknown')} at {ep.get('start_addr', '?')}): "
+                    f"{err.get('type', 'unknown error')} at pc={err.get('pc', '?')} "
+                    f"(instr: {err.get('instr', '?')})"
+                )
+            for err in top_level_errors:
+                lines.append(
+                    f"Session-level: {err.get('type', 'unknown error')} at pc={err.get('pc', '?')} "
+                    f"(instr: {err.get('instr', '?')})"
+                )
+            error_section = ResultSection("Emulation errors encountered", body="\n".join(lines))
             error_section.set_heuristic(5, signature="emulation_error")
             result.add_section(error_section)
 
