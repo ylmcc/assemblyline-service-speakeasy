@@ -1,0 +1,97 @@
+name: Speakeasy
+version: $SERVICE_TAG
+description: >
+  Emulates Windows PE binaries, drivers, and raw shellcode against a modeled Windows
+  runtime (Unicorn CPU emulation with a faked API/filesystem/registry/network surface)
+  using a vendored copy of Mandiant's Speakeasy, to observe behavior a static-only pass
+  would miss: API calls, process/thread injection, dropped files, registry activity,
+  and simulated network indicators. Pure emulation -- no real syscalls reach the host,
+  no real network connection is made, and the submitted sample is never executed any
+  other way.
+
+accepts: executable/windows/.*
+rejects: empty|metadata/.*
+
+stage: SECONDARY
+category: Dynamic Analysis
+file_required: true
+timeout: 300
+disable_cache: false
+enabled: true
+is_external: false
+licence_count: 0
+
+submission_params:
+  - name: emulation_timeout_seconds
+    type: int
+    default: 60
+    value: 60
+  - name: max_emulation_memory_mb
+    type: int
+    default: 2048
+    value: 2048
+  - name: max_events_displayed
+    type: int
+    default: 500
+    value: 500
+  - name: emulate_children
+    type: bool
+    default: false
+    value: false
+  - name: extract_strings
+    type: bool
+    default: true
+    value: true
+  - name: raw_mode
+    type: bool
+    default: false
+    value: false
+  - name: raw_arch
+    type: str
+    default: ""
+    value: ""
+  - name: raw_offset_hex
+    type: str
+    default: ""
+    value: ""
+
+heuristics:
+  - heur_id: 1
+    name: Emulation completed
+    description: Speakeasy successfully emulated the sample and produced a behavioral report.
+    filetype: ".*"
+    score: 0
+  - heur_id: 2
+    name: Cross-process or injection activity observed
+    description: The sample allocated/wrote memory in another process, created a remote thread, or spawned a child process during emulation -- classic process injection/spawning technique.
+    filetype: ".*"
+    score: 400
+    attack_id: T1055
+  - heur_id: 3
+    name: Files dropped during emulation
+    description: The sample wrote one or more files during emulation; the recovered content was submitted for further static analysis.
+    filetype: ".*"
+    score: 100
+  - heur_id: 4
+    name: Emulated network activity observed
+    description: The sample performed DNS/network/HTTP-shaped API calls during emulation. These are Speakeasy's own simulated responses, not real traffic, but indicate C2/beacon-shaped intent.
+    filetype: ".*"
+    score: 150
+    attack_id: T1071
+  - heur_id: 5
+    name: Emulation errors encountered
+    description: Speakeasy recorded session- or entry-point-level errors (e.g. an unsupported API) -- results reflect only what was successfully emulated before each error.
+    filetype: ".*"
+    score: 0
+  - heur_id: 6
+    name: Emulation incomplete or failed
+    description: Speakeasy did not complete (timeout or no parseable report produced).
+    filetype: ".*"
+    score: 0
+
+docker_config:
+  image: kylemc54321/assemblyline-service-speakeasy:$SERVICE_TAG
+  cpu_cores: 1
+  ram_mb_min: 512
+  ram_mb: 3072
+  allow_internet_access: false

@@ -1,0 +1,36 @@
+This repository vendors the source of Speakeasy:
+
+    Project:  Speakeasy
+    Author:   Mandiant (Google Cloud)
+    Source:   https://github.com/mandiant/speakeasy
+    Commit:   1e6e622bb5cea2e4d843143fa15acf1043150291
+    License:  MIT (see speakeasy_service/vendor/speakeasy-src/LICENSE.txt, copied verbatim)
+
+speakeasy_service/vendor/speakeasy-src is an unmodified copy of the upstream `speakeasy`
+package plus the packaging files needed to `pip install` it (pyproject.toml, setup.py,
+MANIFEST.in). It is built and installed into this service's Docker image (see
+Dockerfile) and invoked as a subprocess via its own `speakeasy` CLI entry point.
+
+The upstream git submodules deps/win32json (https://github.com/marlersoft/win32json,
+commit 071df4995290b72320010ecfc2fca51946b5c6b4) and deps/phnt
+(https://github.com/winsiderss/phnt, commit 53fbbdc5b5d2b08761db1c7b26bfa8c820924356)
+were NOT vendored as source -- instead, they were checked out once locally and used
+to run upstream's own `setup.py` signature-generation step (see
+speakeasy-src/scripts/gen_win32_signatures.py and gen_phnt_signatures.py), and only
+the resulting generated artifacts are vendored here:
+speakeasy_service/vendor/speakeasy-src/speakeasy/resources/win32/{signatures,phnt_signatures}.json.gz.
+This is exactly what upstream's own build does when those submodules ARE present at
+build time (setup.py: "regenerate the generated speakeasy/resources/win32/*.json.gz
+files... so that [they] ship in every distribution without being committed to the
+repository") -- we just ran that generation step once ourselves and committed the
+result, rather than requiring deps/win32json and deps/phnt to be fetched on every
+Docker build. Without these files (or the submodules) present, `pip install .` hard
+fails at build time with "deps/win32json is not checked out and no signature database
+exists" -- this is not actually optional, unlike what upstream's own
+`git submodule update --init ... || true` in its Dockerfile might suggest.
+win32json is MIT licensed; phnt is MIT licensed (see each project's own repository).
+
+All other code in this repository (speakeasy_service/runner.py,
+speakeasy_service/speakeasy_service.py, service_manifest.yml, Dockerfile, tests) is
+original work written for this AssemblyLine v4 service and is licensed under this
+repository's own MIT LICENSE.
