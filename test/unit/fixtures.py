@@ -34,6 +34,11 @@ SUCCESS_REPORT = {
             "instr_count": 12345,
             "apihash": "2222222222222222222222222222222222222222222222222222222222222222",
             "ret_val": "0x0",
+            "error": {
+                "type": "Invalid memory fetch (UC_ERR_FETCH_UNMAPPED)",
+                "pc": "0xfeedf04c",
+                "instr": "add byte ptr [rax], al",
+            },
             "events": [
                 {"pos": {"tick": 10, "tid": 2000, "pid": 1337, "pc": 4198400}, "event": "api",
                  "api_name": "kernel32.LoadLibraryA", "args": ["ws2_32"], "ret_val": "0x78c00000"},
