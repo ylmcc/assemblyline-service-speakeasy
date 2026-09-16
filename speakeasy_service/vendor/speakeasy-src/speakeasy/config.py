@@ -262,6 +262,20 @@ class ExceptionsConfig(BaseModel):
     dispatch_handlers: bool = Field(default=True, description="Dispatch configured exception handlers during faults.")
 
 
+class MemoryConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    allow_self_modifying_writes: bool = Field(
+        default=True,
+        description="When a write faults only because its destination page lacks write "
+        "permission, and that destination lies within the memory image of the module "
+        "currently executing, grant that page write permission and continue emulation "
+        "instead of aborting the run (the common self-decrypting/self-modifying "
+        "unpacking stub pattern). Writes that fault outside the currently executing "
+        "module's own image still abort the run as before.",
+    )
+
+
 class OsVersionConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -556,6 +570,10 @@ class SpeakeasyConfig(BaseModel):
     exceptions: ExceptionsConfig = Field(
         default_factory=lambda: ExceptionsConfig.model_validate(_copy_default_value("exceptions")),
         description="Exception dispatch behavior.",
+    )
+    memory: MemoryConfig = Field(
+        default_factory=MemoryConfig,
+        description="Memory protection-fault handling settings.",
     )
     os_ver: OsVersionConfig = Field(
         default_factory=lambda: OsVersionConfig.model_validate(_copy_default_value("os_ver")),

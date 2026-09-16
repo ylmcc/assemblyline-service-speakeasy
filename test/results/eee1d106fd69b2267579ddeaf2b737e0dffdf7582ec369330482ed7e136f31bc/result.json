@@ -1,11 +1,90 @@
 {
   "extra": {
     "drop_file": false,
-    "score": 0,
+    "score": 1600,
     "sections": [
       {
         "auto_collapse": false,
-        "body": "Speakeasy exited without producing a report file. See the supplementary log for details.",
+        "body": {
+          "arch": "x86",
+          "entry_points": 1,
+          "filetype": "exe",
+          "runtime_seconds": 1.234
+        },
+        "body_config": {},
+        "body_format": "KEY_VALUE",
+        "classification": "TLP:C",
+        "depth": 0,
+        "heuristic": {
+          "attack_ids": [],
+          "frequency": 1,
+          "heur_id": 1,
+          "score": 0,
+          "score_map": {},
+          "signatures": {
+            "emulation_completed": 1
+          }
+        },
+        "promote_to": null,
+        "tags": {},
+        "title_text": "Emulation summary",
+        "zeroize_on_tag_safe": false
+      },
+      {
+        "auto_collapse": false,
+        "body": [
+          {
+            "event": "mem_alloc",
+            "path": "C:\\Windows\\System32\\notepad.exe",
+            "target_pid": 4242,
+            "tid": ""
+          },
+          {
+            "event": "thread_inject",
+            "path": "C:\\Windows\\System32\\notepad.exe",
+            "target_pid": 4242,
+            "tid": 4300
+          },
+          {
+            "event": "process_create",
+            "path": "C:\\Windows\\System32\\cmd.exe",
+            "target_pid": 4200,
+            "tid": ""
+          }
+        ],
+        "body_config": {
+          "column_order": [
+            "event",
+            "path",
+            "target_pid",
+            "tid"
+          ]
+        },
+        "body_format": "TABLE",
+        "classification": "TLP:C",
+        "depth": 0,
+        "heuristic": {
+          "attack_ids": [
+            "T1055"
+          ],
+          "frequency": 1,
+          "heur_id": 2,
+          "score": 1200,
+          "score_map": {},
+          "signatures": {
+            "mem_alloc": 1,
+            "process_create": 1,
+            "thread_inject": 1
+          }
+        },
+        "promote_to": null,
+        "tags": {},
+        "title_text": "Cross-process / injection activity",
+        "zeroize_on_tag_safe": false
+      },
+      {
+        "auto_collapse": false,
+        "body": "1 file(s) written by the sample during emulation were recovered and submitted for further analysis.",
         "body_config": {},
         "body_format": "TEXT",
         "classification": "TLP:C",
@@ -13,26 +92,101 @@
         "heuristic": {
           "attack_ids": [],
           "frequency": 1,
-          "heur_id": 6,
-          "score": 0,
+          "heur_id": 3,
+          "score": 100,
           "score_map": {},
           "signatures": {
-            "no_report_produced": 1
+            "dropped_files": 1
           }
         },
         "promote_to": null,
         "tags": {},
-        "title_text": "Emulation incomplete or failed",
+        "title_text": "Files dropped during emulation",
+        "zeroize_on_tag_safe": false
+      },
+      {
+        "auto_collapse": false,
+        "body": [
+          {
+            "event": "net_dns",
+            "port": "",
+            "query": "example.org",
+            "response": "93.184.216.34",
+            "server": ""
+          },
+          {
+            "event": "net_traffic",
+            "port": 443,
+            "query": "",
+            "response": "",
+            "server": "93.184.216.34"
+          }
+        ],
+        "body_config": {
+          "column_order": [
+            "event",
+            "server",
+            "port",
+            "query",
+            "response"
+          ]
+        },
+        "body_format": "TABLE",
+        "classification": "TLP:C",
+        "depth": 0,
+        "heuristic": {
+          "attack_ids": [
+            "T1071"
+          ],
+          "frequency": 1,
+          "heur_id": 4,
+          "score": 300,
+          "score_map": {},
+          "signatures": {
+            "net_dns": 1,
+            "net_traffic": 1
+          }
+        },
+        "promote_to": null,
+        "tags": {},
+        "title_text": "Emulated network activity (simulated, not real traffic)",
+        "zeroize_on_tag_safe": false
+      },
+      {
+        "auto_collapse": false,
+        "body": "Entry point 0 (module_entry at 0x401000): Invalid memory fetch (UC_ERR_FETCH_UNMAPPED) at pc=0xfeedf04c (instr: add byte ptr [rax], al)",
+        "body_config": {},
+        "body_format": "TEXT",
+        "classification": "TLP:C",
+        "depth": 0,
+        "heuristic": {
+          "attack_ids": [],
+          "frequency": 1,
+          "heur_id": 5,
+          "score": 0,
+          "score_map": {},
+          "signatures": {
+            "emulation_error": 1
+          }
+        },
+        "promote_to": null,
+        "tags": {},
+        "title_text": "Emulation errors encountered",
         "zeroize_on_tag_safe": false
       }
     ]
   },
   "files": {
-    "extracted": [],
+    "extracted": [
+      {
+        "name": "3333333333333333333333333333333333333333333333333333333333333333_drop.bin",
+        "sha256": "1d3a7add314eaca5404d4f3f710dd11e3667a9e04ce587860dd9ccd6dde6c38c"
+      }
+    ],
     "supplementary": [
       {
         "name": "speakeasy_report.json",
-        "sha256": "00375de56eda03c562dcb554cfe1cdaf4495c31c8d08a43950dc487b557f75ec"
+        "sha256": "7066693d4e995f4dfd25c26d4a5f51cb4110453f1c4a23cce40f77dabb343d8d"
       }
     ]
   },
@@ -40,9 +194,44 @@
     "heuristics": [
       {
         "attack_ids": [],
-        "heur_id": 6,
+        "heur_id": 1,
         "signatures": [
-          "no_report_produced"
+          "emulation_completed"
+        ]
+      },
+      {
+        "attack_ids": [
+          "T1055"
+        ],
+        "heur_id": 2,
+        "signatures": [
+          "mem_alloc",
+          "thread_inject",
+          "process_create"
+        ]
+      },
+      {
+        "attack_ids": [],
+        "heur_id": 3,
+        "signatures": [
+          "dropped_files"
+        ]
+      },
+      {
+        "attack_ids": [
+          "T1071"
+        ],
+        "heur_id": 4,
+        "signatures": [
+          "net_dns",
+          "net_traffic"
+        ]
+      },
+      {
+        "attack_ids": [],
+        "heur_id": 5,
+        "signatures": [
+          "emulation_error"
         ]
       }
     ],

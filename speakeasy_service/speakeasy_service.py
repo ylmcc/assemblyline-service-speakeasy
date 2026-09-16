@@ -53,6 +53,7 @@ class Speakeasy(ServiceBase):
             raw_mode=request.get_param("raw_mode"),
             raw_arch=request.get_param("raw_arch"),
             raw_offset_hex=request.get_param("raw_offset_hex"),
+            allow_self_modifying_writes=request.get_param("allow_self_modifying_writes"),
         )
 
         result = Result()

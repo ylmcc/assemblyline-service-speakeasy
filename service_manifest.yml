@@ -54,6 +54,10 @@ submission_params:
     type: str
     default: ""
     value: ""
+  - name: allow_self_modifying_writes
+    type: bool
+    default: true
+    value: true
 
 heuristics:
   - heur_id: 1

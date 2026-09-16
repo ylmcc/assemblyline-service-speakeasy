@@ -2078,6 +2078,9 @@ class WindowsEmulator(BinaryEmulator):
             return False
 
     def _handle_prot_write(self, emu, address, size, value):
+        if self._is_self_modifying_write(address):
+            return self._allow_self_modifying_write(address, size)
+
         fakeout = address & 0xFFFFFFFFFFFFF000
         self.mem_map(self.page_size, base=fakeout)
 
@@ -2086,6 +2089,62 @@ class WindowsEmulator(BinaryEmulator):
 
         self.tmp_maps.append((fakeout, self.page_size))
         self.on_run_complete()
+        return True
+
+    def _is_self_modifying_write(self, address):
+        """
+        A write that faults purely because the destination page lacks write
+        permission, where the destination lies within the memory image of the
+        module that is currently executing, is the classic self-decrypting /
+        self-modifying unpacking stub pattern (a packer writing decrypted bytes
+        back into its own code/data region) rather than a genuine out-of-bounds
+        or memory-corruption-style write. Cross-module or cross-allocation
+        protected writes (e.g. into another module's image, or into memory the
+        current module doesn't own) still fall through to the normal abort path
+        below -- this only relaxes the specific, extremely common "unpacker
+        writes into itself" case, gated by a config flag so it can be disabled
+        for analysis that specifically cares about strict W^X enforcement.
+        """
+        if not self.config.memory.allow_self_modifying_writes:
+            return False
+        pc_mod = self.get_mod_from_addr(self.get_pc())
+        dst_mod = self.get_mod_from_addr(address)
+        if pc_mod is not None and dst_mod is not None and dst_mod.base == pc_mod.base:
+            return True
+
+        # Not a write within a shared PE module image -- also allow the case of a
+        # process patching a page it allocated itself (e.g. a VirtualAlloc'd
+        # scratch buffer used to stage a later decrypted layer), since that's the
+        # same benign self-modifying pattern just outside module bounds. A write
+        # into memory owned by some *other* process (real cross-process
+        # injection) is intentionally left alone below.
+        dst_map = self.get_address_map(address)
+        if dst_map is None or dst_map.process is None:
+            return False
+        curr_process = self.get_current_process()
+        return curr_process is not None and dst_map.process is curr_process
+
+    def _allow_self_modifying_write(self, address, size):
+        """
+        Grant write permission to only the specific page(s) the sample is about
+        to write into (never the whole image, never memory outside it), then let
+        emulation continue instead of aborting the run. The touched page(s) are
+        also made executable/readable (PERM_MEM_RWX) since a self-decrypting
+        stub typically jumps into the freshly-written bytes immediately after
+        writing them, and this mirrors what the sample would itself request via
+        VirtualProtect(PAGE_EXECUTE_READWRITE) if it called that API explicitly.
+        """
+        page_base = address & 0xFFFFFFFFFFFFF000
+        write_end = address + max(size, 1)
+        page_end = (write_end + self.page_size - 1) & 0xFFFFFFFFFFFFF000
+        prot_size = page_end - page_base
+
+        self.mem_protect(page_base, prot_size, common.PERM_MEM_RWX)
+
+        mm = self.get_address_map(address)
+        if mm:
+            mm.prot = common.PERM_MEM_RWX
+
         return True
 
     def restart_run(self, run):

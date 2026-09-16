@@ -1456,7 +1456,14 @@ class Ntoskrnl(api.ApiHandler):
 
         base = self.mem_read(BaseAddress, emu.get_ptr_size())
         base = int.from_bytes(base, "little")
-        base = self.mem_alloc(size, tag=f"api.virtalloc.{obj.image}", process=obj)
+        # Honor the caller's requested page protection (e.g. PAGE_EXECUTE_READWRITE)
+        # instead of defaulting to no access -- callers that allocate memory here
+        # specifically to decrypt/unpack into (a common pattern for samples that
+        # resolve APIs manually and call Nt*/Zw* directly instead of the
+        # kernel32-level VirtualAlloc, precisely to dodge IAT-based hooking) expect
+        # to be able to write into what they were just told is writable memory.
+        perms = self.win_perms_to_emu_perms(Protect)
+        base = self.mem_alloc(size, tag=f"api.virtalloc.{obj.image}", perms=perms, process=obj)
 
         emu._set_dyn_code_hook(base, size)
 
