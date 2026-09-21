@@ -10,7 +10,7 @@ description: >
   other way.
 
 accepts: executable/windows/.*
-rejects: empty|metadata/.*
+rejects: empty|metadata/.*|executable/windows/dos
 
 stage: SECONDARY
 category: Dynamic Analysis

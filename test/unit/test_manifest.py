@@ -41,3 +41,13 @@ def test_vendor_source_present():
     src = os.path.join(os.path.dirname(__file__), "..", "..", "speakeasy_service", "vendor", "speakeasy-src")
     assert os.path.isdir(os.path.join(src, "speakeasy"))
     assert os.path.isfile(os.path.join(src, "pyproject.toml"))
+
+
+def test_dos_fragments_are_rejected_but_real_pes_are_accepted():
+    """AL types tiny junk (e.g. base64-decoded fragments) as executable/windows/dos; Speakeasy can only
+    emulate PEs, so those always fail with 'not a PE'."""
+    manifest = _manifest()
+    assert re.fullmatch(manifest["rejects"], "executable/windows/dos")
+    for pe_type in ("executable/windows/pe64", "executable/windows/pe32", "executable/windows/dll64"):
+        assert re.fullmatch(manifest["accepts"], pe_type)
+        assert not re.fullmatch(manifest["rejects"], pe_type)

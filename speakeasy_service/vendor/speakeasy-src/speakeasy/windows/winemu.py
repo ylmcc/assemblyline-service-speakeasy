@@ -56,6 +56,19 @@ def _module_type_from_path(path: str, default: str = "dll") -> str:
     return default
 
 
+def coalesce_page_perms(page_perms, page_size):
+    """Merge a {page_base: perms} map into sorted (base, size, perms) runs of adjacent pages that
+    share the same permissions."""
+    runs = []
+    for page_base in sorted(page_perms):
+        perms = page_perms[page_base]
+        if runs and runs[-1][0] + runs[-1][1] == page_base and runs[-1][2] == perms:
+            runs[-1][1] += page_size
+        else:
+            runs.append([page_base, page_size, perms])
+    return [tuple(r) for r in runs]
+
+
 class BootstrapPhase(IntEnum):
     INITIALIZED = 0
     ENGINE_API_READY = 1
@@ -1159,11 +1172,18 @@ class WindowsEmulator(BinaryEmulator):
                 for page_base in range(aligned_addr, aligned_end, self.page_size):
                     page_perms[page_base] = page_perms.get(page_base, 0) | sect.perms
 
-            for page_base, perms in page_perms.items():
+            # One mem_protect per contiguous run of equal permissions, not per page: every call splits
+            # a Unicorn memory region, so a PE with a very large section (tens of MB) made loading
+            # alone outlast the emulation timeout.
+            for run_base, run_size, perms in coalesce_page_perms(page_perms, self.page_size):
                 try:
-                    self.mem_protect(page_base, self.page_size, perms)
+                    self.mem_protect(run_base, run_size, perms)
                 except Exception:
-                    pass
+                    for page_base in range(run_base, run_base + run_size, self.page_size):
+                        try:
+                            self.mem_protect(page_base, self.page_size, perms)
+                        except Exception:
+                            pass
 
         mod = RuntimeModule(image)
         if image.image_base != 0 and mod.base != image.image_base:
