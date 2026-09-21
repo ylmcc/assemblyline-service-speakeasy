@@ -90,3 +90,33 @@ def test_resolve_data_ref_decodes_zlib_base64():
 
 def test_resolve_data_ref_missing_returns_none():
     assert resolve_data_ref(SUCCESS_REPORT, "does-not-exist") is None
+
+
+def test_allow_self_modifying_writes_defaults_to_enabled_flag(tmp_path):
+    captured = {}
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _writes_report(MINIMAL_REPORT)(cmd, **kwargs)
+
+    with patch("speakeasy_service.runner.subprocess.run", side_effect=_fake_run):
+        run_speakeasy("/tmp/sample.bin", str(tmp_path), timeout=30)
+
+    cmd = captured["cmd"]
+    assert "--memory-allow-self-modifying-writes" in cmd
+    assert "--no-memory-allow-self-modifying-writes" not in cmd
+
+
+def test_allow_self_modifying_writes_can_be_disabled(tmp_path):
+    captured = {}
+
+    def _fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _writes_report(MINIMAL_REPORT)(cmd, **kwargs)
+
+    with patch("speakeasy_service.runner.subprocess.run", side_effect=_fake_run):
+        run_speakeasy("/tmp/sample.bin", str(tmp_path), timeout=30, allow_self_modifying_writes=False)
+
+    cmd = captured["cmd"]
+    assert "--no-memory-allow-self-modifying-writes" in cmd
+    assert "--memory-allow-self-modifying-writes" not in cmd

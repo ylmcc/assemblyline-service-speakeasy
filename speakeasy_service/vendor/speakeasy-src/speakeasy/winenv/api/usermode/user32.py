@@ -24,6 +24,33 @@ IDI_WINLOGO = 32517
 
 UOI_FLAGS = 1
 
+CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT = 1, 7, 13
+_CF_NAMES = {CF_TEXT: "CF_TEXT", CF_OEMTEXT: "CF_OEMTEXT", CF_UNICODETEXT: "CF_UNICODETEXT"}
+_CLIPBOARD_SEQ_BASE = 295
+
+
+def _patterned(prefix: str, n: int, alphabet: str, step: int = 7, start: int = 3) -> str:
+    """Deterministic, obviously-synthetic text with the *shape* of a cryptocurrency address. These are
+    NOT real addresses (their checksums are invalid); they only need to look right to a clipper's
+    regex so it reveals the address it substitutes."""
+    return prefix + "".join(alphabet[(i * step + start) % len(alphabet)] for i in range(n))
+
+
+_B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_BECH32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
+CLIPBOARD_DECOYS = [
+    _patterned("1", 33, _B58),                      # bitcoin, legacy
+    _patterned("3", 33, _B58),                      # bitcoin, P2SH
+    _patterned("bc1q", 38, _BECH32, 5, 1),          # bitcoin, bech32
+    _patterned("0x", 40, "0123456789abcdef", 3, 1),  # ethereum / EVM
+    _patterned("L", 33, _B58),                      # litecoin
+    _patterned("D", 33, _B58),                      # dogecoin
+    _patterned("T", 33, _B58),                      # tron
+    _patterned("r", 33, _B58),                      # ripple
+    _patterned("", 44, _B58),                       # solana
+    _patterned("4", 94, _B58),                      # monero
+]
+
 
 class User32(api.ApiHandler):
     """
@@ -50,6 +77,10 @@ class User32(api.ApiHandler):
         self.synthetic_async_key_index = 0
         self.synthetic_hook_keys = [0x41, 0x42, 0x43]
         self.synthetic_hook_key_index = 0
+        self.clipboard_reads: int = 0          # GetClipboardData calls so far (selects the next decoy)
+        self.clipboard_seq_calls: int = 0      # GetClipboardSequenceNumber calls (each looks like a change)
+        self.clipboard_writes: int = 0
+        self.clipboard_text: str | None = None
 
         super().__get_hook_attrs__(self)
 
@@ -1254,7 +1285,9 @@ class User32(api.ApiHandler):
           UINT format
         );
         """
-        return 0
+        (fmt,) = argv
+        # The emulated clipboard always holds text, so a clipper's "is there text to replace?" check passes.
+        return 1 if fmt in (CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT) else 0
 
     @apihook("IsWindow", argc=1)
     def IsWindow(self, emu, argv, ctx: api.ApiContext = None):
@@ -1518,7 +1551,104 @@ class User32(api.ApiHandler):
         """
         # >>> ctypes.windll.user32.GetClipboardSequenceNumber()
         # 295
-        return 295
+        # Every call after the first reports a new number, as if another application had copied
+        # something, which is what a clipboard-polling loop waits for.
+        seq = _CLIPBOARD_SEQ_BASE + self.clipboard_seq_calls
+        self.clipboard_seq_calls += 1
+        return seq
+
+    @apihook("OpenClipboard", argc=1)
+    def OpenClipboard(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        BOOL OpenClipboard(
+          HWND hWndNewOwner
+        );
+        """
+        emu.set_last_error(0)
+        return 1
+
+    @apihook("CloseClipboard", argc=0)
+    def CloseClipboard(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        BOOL CloseClipboard();
+        """
+        emu.set_last_error(0)
+        return 1
+
+    @apihook("EmptyClipboard", argc=0)
+    def EmptyClipboard(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        BOOL EmptyClipboard();
+        """
+        self.clipboard_text = None
+        self.record_clipboard_event("empty", "")
+        return 1
+
+    @apihook("AddClipboardFormatListener", argc=1)
+    def AddClipboardFormatListener(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        BOOL AddClipboardFormatListener(
+          HWND hwnd
+        );
+        """
+        return 1
+
+    @apihook("RemoveClipboardFormatListener", argc=1)
+    def RemoveClipboardFormatListener(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        BOOL RemoveClipboardFormatListener(
+          HWND hwnd
+        );
+        """
+        return 1
+
+    @apihook("GetClipboardData", argc=1)
+    def GetClipboardData(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        HANDLE GetClipboardData(
+          UINT uFormat
+        );
+        """
+        (fmt,) = argv
+        if fmt not in (CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT):
+            return 0
+        # Offer one synthetic wallet-shaped string per call, then an empty clipboard, so a clipper
+        # that replaces addresses shows the address it substitutes for every currency it knows, and
+        # a polling loop still ends.
+        if self.clipboard_reads >= len(CLIPBOARD_DECOYS):
+            return 0
+        text = CLIPBOARD_DECOYS[self.clipboard_reads]
+        self.clipboard_reads += 1
+        self.clipboard_text = text
+
+        wide = fmt == CF_UNICODETEXT
+        data = text.encode("utf-16-le" if wide else "ascii") + (b"\x00\x00" if wide else b"\x00")
+        # GlobalLock returns its argument in this emulator, so the handle is a plain pointer.
+        hmem = self.heap_alloc(len(data), heap="GetClipboardData")
+        emu.mem_write(hmem, data)
+        self.record_clipboard_event("read", _CF_NAMES[fmt], text)
+        return hmem
+
+    @apihook("SetClipboardData", argc=2)
+    def SetClipboardData(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        HANDLE SetClipboardData(
+          UINT   uFormat,
+          HANDLE hMem
+        );
+        """
+        fmt, hmem = argv
+        name = _CF_NAMES.get(fmt, "0x%x" % fmt)
+        text = None
+        if hmem and fmt in (CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT):
+            try:
+                text = self.read_mem_string(hmem, 2 if fmt == CF_UNICODETEXT else 1, max_chars=4096)
+            except Exception:
+                text = None
+        self.clipboard_text = text
+        self.clipboard_writes += 1
+        self.record_clipboard_event("write", name, text)
+        return hmem
 
     @apihook("GetCaretBlinkTime", argc=0)
     def GetCaretBlinkTime(self, emu, argv, ctx: api.ApiContext = None):

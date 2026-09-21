@@ -255,6 +255,14 @@ class ApiHandler:
                 run, pos, path, event_type, value_name, data, handle, disposition, access, buffer, size
             )
 
+    def record_clipboard_event(self, action, fmt, text=None):
+        logger.debug("clipboard: %s %s %r", action, fmt, text)
+        profiler = self.emu.get_profiler()
+        if profiler:
+            run = self.emu.get_current_run()
+            pos = self._get_current_trace_position()
+            profiler.record_clipboard_event(run, pos, action, fmt, text)
+
     def record_dns_event(self, domain, ip=""):
         logger.debug("dns: %s -> %s", domain, ip)
         profiler = self.emu.get_profiler()

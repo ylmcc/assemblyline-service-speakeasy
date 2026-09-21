@@ -12,6 +12,15 @@ sample any other way.
 Invoked as a subprocess (not a library call) with an RLIMIT_AS memory cap and a
 wall-clock timeout on top of Speakeasy's own --timeout, since a malformed or
 adversarially crafted binary is exactly the kind of input an emulator is pointed at.
+
+`allow_self_modifying_writes` (on by default) passes through to speakeasy's own
+`--memory-allow-self-modifying-writes` flag: when a write faults only because its
+destination page lacks write permission, and the destination is within memory the
+currently-executing module/process itself owns, speakeasy grants that page write
+permission and keeps emulating instead of aborting the run on the spot. This is the
+common self-decrypting/self-modifying unpacking stub pattern; disable it only to
+study strict W^X-violation behavior instead of a sample's real post-unpacking
+behavior.
 """
 from __future__ import annotations
 
@@ -71,6 +80,7 @@ def run_speakeasy(
     raw_mode: bool = False,
     raw_arch: str = "",
     raw_offset_hex: str = "",
+    allow_self_modifying_writes: bool = True,
 ) -> SpeakeasyResult:
     report_fd, report_path = tempfile.mkstemp(dir=work_dir, prefix="speakeasy_report_", suffix=".json")
     os.close(report_fd)
@@ -84,6 +94,8 @@ def run_speakeasy(
         SPEAKEASY_BIN, "--target", os.path.abspath(sample_path),
         "--no-mp", "--output", report_path, "--timeout", str(timeout),
         "--analysis-strings" if extract_strings else "--no-analysis-strings",
+        "--memory-allow-self-modifying-writes" if allow_self_modifying_writes
+        else "--no-memory-allow-self-modifying-writes",
     ]
     if emulate_children:
         cmd.append("--emulate-children")

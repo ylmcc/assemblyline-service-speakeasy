@@ -6,10 +6,20 @@ This repository vendors the source of Speakeasy:
     Commit:   1e6e622bb5cea2e4d843143fa15acf1043150291
     License:  MIT (see speakeasy_service/vendor/speakeasy-src/LICENSE.txt, copied verbatim)
 
-speakeasy_service/vendor/speakeasy-src is an unmodified copy of the upstream `speakeasy`
-package plus the packaging files needed to `pip install` it (pyproject.toml, setup.py,
-MANIFEST.in). It is built and installed into this service's Docker image (see
+speakeasy_service/vendor/speakeasy-src is a copy of the upstream `speakeasy` package plus
+the packaging files needed to `pip install` it (pyproject.toml, setup.py, MANIFEST.in),
+with one local modification (described below). It is built and installed into this service's Docker image (see
 Dockerfile) and invoked as a subprocess via its own `speakeasy` CLI entry point.
+
+Local modification -- emulated clipboard. Upstream implements only GetClipboardSequenceNumber
+(a constant), so a sample that reads the clipboard gets no text and faults before its own
+logic runs. Changed files: speakeasy/winenv/api/usermode/user32.py (OpenClipboard,
+CloseClipboard, EmptyClipboard, GetClipboardData, SetClipboardData, AddClipboardFormatListener,
+RemoveClipboardFormatListener, IsClipboardFormatAvailable, and a GetClipboardSequenceNumber that
+changes on every call), speakeasy/profiler_events.py (ClipboardEvent), speakeasy/profiler.py
+(record_clipboard_event) and speakeasy/winenv/api/api.py (record_clipboard_event). The emulated
+clipboard hands the sample one synthetic, wallet-address-shaped string per read (patterned
+text with invalid checksums, never real addresses) and records what the sample writes back.
 
 The upstream git submodules deps/win32json (https://github.com/marlersoft/win32json,
 commit 071df4995290b72320010ecfc2fca51946b5c6b4) and deps/phnt

@@ -33,6 +33,21 @@ _CROSS_PROCESS_EVENTS = {"mem_alloc", "mem_write", "mem_protect", "mem_free", "t
 _NETWORK_EVENTS = {"net_dns", "net_traffic", "net_http"}
 
 
+def clipboard_replacements(events: list[dict]) -> list[tuple[str, str]]:
+    """(text read, text written back) pairs where the sample replaced clipboard text with different
+    text: the behaviour of a clipboard hijacker. Text the sample writes without having read
+    anything first is not a replacement."""
+    pairs, last_read = [], None
+    for ev in events:
+        if ev.get("event") != "clipboard":
+            continue
+        if ev.get("action") == "read":
+            last_read = ev.get("text")
+        elif ev.get("action") == "write" and last_read and ev.get("text") and ev["text"] != last_read:
+            pairs.append((last_read, ev["text"]))
+    return pairs
+
+
 class Speakeasy(ServiceBase):
     def __init__(self, config=None) -> None:
         super().__init__(config)
@@ -53,6 +68,7 @@ class Speakeasy(ServiceBase):
             raw_mode=request.get_param("raw_mode"),
             raw_arch=request.get_param("raw_arch"),
             raw_offset_hex=request.get_param("raw_offset_hex"),
+            allow_self_modifying_writes=request.get_param("allow_self_modifying_writes"),
         )
 
         result = Result()
@@ -137,6 +153,26 @@ class Speakeasy(ServiceBase):
                 heur4.add_signature_id(ev["event"])
             net_table.set_heuristic(heur4)
             result.add_section(net_table)
+
+        clipboard_events = [ev for ev in all_events if ev["event"] == "clipboard"]
+        if clipboard_events:
+            replacements = clipboard_replacements(clipboard_events)
+            clip_table = ResultTableSection("Clipboard activity (emulated clipboard with synthetic wallet-shaped text)")
+            for ev in clipboard_events[:max_rows]:
+                clip_table.add_row(TableRow(
+                    action=ev.get("action", ""), format=ev.get("format", ""), text=ev.get("text") or "",
+                ))
+            if replacements:
+                clip_table.add_subsection(ResultSection(
+                    "Clipboard text was replaced (clipboard hijacker behaviour)",
+                    body="\n".join(f"{old}  ->  {new}" for old, new in replacements[:max_rows]),
+                ))
+                clip_table.set_heuristic(7, signature="clipboard_replaced")
+                for _, new in replacements:
+                    clip_table.add_tag("file.string.extracted", new)
+            else:
+                clip_table.set_heuristic(7, signature="clipboard_access")
+            result.add_section(clip_table)
 
         top_level_errors = report.get("errors") or []
         ep_errors = [(i, ep) for i, ep in enumerate(entry_points) if ep.get("error")]

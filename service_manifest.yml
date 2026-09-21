@@ -54,6 +54,10 @@ submission_params:
     type: str
     default: ""
     value: ""
+  - name: allow_self_modifying_writes
+    type: bool
+    default: true
+    value: true
 
 heuristics:
   - heur_id: 1
@@ -88,6 +92,15 @@ heuristics:
     description: Speakeasy did not complete (timeout or no parseable report produced).
     filetype: ".*"
     score: 0
+  - heur_id: 7
+    name: Clipboard activity observed
+    description: The sample read or wrote the clipboard. Speakeasy's emulated clipboard offers synthetic wallet-address-shaped text, so a sample that writes back different text is behaving like a clipboard hijacker (clipper) that swaps cryptocurrency addresses.
+    filetype: ".*"
+    score: 0
+    signature_score_map:
+      clipboard_access: 0
+      clipboard_replaced: 500
+    attack_id: T1115
 
 docker_config:
   image: kylemc54321/assemblyline-service-speakeasy:$SERVICE_TAG
