@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
+from assemblyline.odm.models.ontology.results import MalwareConfig
 from assemblyline_v4_service.common.base import ServiceBase
 from assemblyline_v4_service.common.request import ServiceRequest
 from assemblyline_v4_service.common.result import (
@@ -31,6 +33,29 @@ from speakeasy_service.runner import resolve_data_ref, run_speakeasy
 
 _CROSS_PROCESS_EVENTS = {"mem_alloc", "mem_write", "mem_protect", "mem_free", "thread_create", "thread_inject"}
 _NETWORK_EVENTS = {"net_dns", "net_traffic", "net_http"}
+
+
+_B58 = "[1-9A-HJ-NP-Za-km-z]"
+# Most specific first: several formats overlap on length, so the generic Solana shape goes last.
+_WALLET_FORMATS = [
+    ("Bitcoin", re.compile(r"(?:bc1[ac-hj-np-z02-9]{11,71}|[13]%s{25,34})" % _B58)),
+    ("Litecoin", re.compile(r"(?:ltc1[ac-hj-np-z02-9]{11,71}|[LM]%s{26,33})" % _B58)),
+    ("Ethereum", re.compile(r"0x[0-9a-fA-F]{40}")),
+    ("TRON", re.compile(r"T%s{33}" % _B58)),
+    ("Dogecoin", re.compile(r"D%s{33}" % _B58)),
+    ("XRP", re.compile(r"r%s{24,34}" % _B58)),
+    ("Monero", re.compile(r"[48]%s{94}" % _B58)),
+    ("Solana", re.compile(r"%s{32,44}" % _B58)),
+]
+
+
+def classify_wallet(address: str) -> str | None:
+    """Name the cryptocurrency an address is shaped like, or None. Shape only: no checksum is
+    verified, and Ethereum-format addresses are shared by every EVM chain."""
+    for coin, pattern in _WALLET_FORMATS:
+        if pattern.fullmatch(address):
+            return coin
+    return None
 
 
 def clipboard_replacements(events: list[dict]) -> list[tuple[str, str]]:
@@ -168,8 +193,20 @@ class Speakeasy(ServiceBase):
                     body="\n".join(f"{old}  ->  {new}" for old, new in replacements[:max_rows]),
                 ))
                 clip_table.set_heuristic(7, signature="clipboard_replaced")
-                for _, new in replacements:
-                    clip_table.add_tag("file.string.extracted", new)
+                wallets = list(dict.fromkeys(new for _, new in replacements))
+                for wallet in wallets:
+                    clip_table.add_tag("file.string.extracted", wallet)
+                # The attacker's wallets are what a clipper is configured with, so they go into the
+                # result ontology as a malware config's cryptocurrency list.
+                self.ontology.add_result_part(MalwareConfig, {
+                    "config_extractor": "Speakeasy",
+                    "family": [],
+                    "attack": ["T1115"],
+                    "cryptocurrency": [
+                        {k: v for k, v in (("coin", classify_wallet(w)), ("address", w), ("usage", "other")) if v}
+                        for w in wallets
+                    ],
+                })
             else:
                 clip_table.set_heuristic(7, signature="clipboard_access")
             result.add_section(clip_table)
