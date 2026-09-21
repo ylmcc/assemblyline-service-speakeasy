@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "speakeas
 
 from speakeasy.winenv.api.usermode import user32  # noqa: E402
 
-from speakeasy_service.speakeasy_service import Speakeasy, clipboard_replacements  # noqa: E402
+from speakeasy_service.speakeasy_service import Speakeasy, classify_wallet, clipboard_replacements  # noqa: E402
 
 CF_UNICODETEXT = 13
 
@@ -145,6 +145,7 @@ def _run_service(tmp_path, events):
     req = _Request(str(sample))
     with patch("speakeasy_service.runner.subprocess.run", side_effect=fake_run):
         svc.execute(req)
+    _run_service.last_service = svc
     return {s.title_text: s for s in req.result.sections}
 
 
@@ -174,3 +175,33 @@ def test_service_read_only_access_scores_zero(tmp_path):
 def test_service_has_no_clipboard_section_without_clipboard_events(tmp_path):
     sections = _run_service(tmp_path, [])
     assert not any(t.startswith("Clipboard activity") for t in sections)
+
+
+def test_every_decoy_shape_is_classified_by_its_own_format():
+    coins = [classify_wallet(d) for d in user32.CLIPBOARD_DECOYS]
+    assert coins == ["Bitcoin", "Bitcoin", "Bitcoin", "Ethereum", "Litecoin", "Dogecoin", "TRON", "XRP",
+                     "Solana", "Monero"]
+    assert classify_wallet("not a wallet") is None
+    assert classify_wallet("ltc1" + "q" * 38) == "Litecoin"
+
+
+def test_replacement_wallets_go_into_the_malware_config_ontology(tmp_path):
+    read = lambda text: {"event": "clipboard", "action": "read", "format": "CF_UNICODETEXT", "text": text}  # noqa: E731
+    write = lambda text: {"event": "clipboard", "action": "write", "format": "CF_UNICODETEXT", "text": text}  # noqa: E731
+    btc, eth = "bc1q" + "q" * 38, "0x" + "ab" * 20
+    _run_service(tmp_path, [
+        read(user32.CLIPBOARD_DECOYS[0]), write(btc),
+        read(user32.CLIPBOARD_DECOYS[2]), write(btc),  # same wallet twice: listed once
+        read(user32.CLIPBOARD_DECOYS[3]), write(eth),
+    ])
+    parts = list(_run_service.last_service.ontology._result_parts.values())
+    assert len(parts) == 1
+    config = parts[0]
+    assert config.config_extractor == "Speakeasy"
+    assert [(c.coin, c.address, c.usage) for c in config.cryptocurrency] == [
+        ("Bitcoin", btc, "other"), ("Ethereum", eth, "other")]
+
+
+def test_no_ontology_part_without_a_replacement(tmp_path):
+    _run_service(tmp_path, [{"event": "clipboard", "action": "read", "format": "CF_UNICODETEXT", "text": "0xaaaa"}])
+    assert not _run_service.last_service.ontology._result_parts
