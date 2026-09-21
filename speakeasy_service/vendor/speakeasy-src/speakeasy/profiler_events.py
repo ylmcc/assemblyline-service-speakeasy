@@ -546,6 +546,19 @@ class RegListSubkeysEvent(Event):
     handle: str | None = Field(default=None, description="Registry handle used for enumeration, when available.")
 
 
+class ClipboardEvent(Event):
+    """Records clipboard reads and writes made by the sample.
+
+    Emitted by the emulated clipboard APIs. A sample that reads clipboard text and then writes
+    different text back is behaving like a clipboard hijacker ("clipper").
+    """
+
+    event: Literal["clipboard"] = Field(default="clipboard", description="Discriminator for clipboard events.")
+    action: Literal["read", "write", "empty"] = Field(description="What the sample did with the clipboard.")
+    format: str = Field(description="Clipboard format, e.g. CF_UNICODETEXT.")
+    text: str | None = Field(default=None, description="Text read or written, when the format is text.")
+
+
 class NetDnsEvent(Event):
     """Records DNS name resolution activity.
 
@@ -640,6 +653,7 @@ AnyEvent = Annotated[
     | RegWriteValueEvent
     | RegListSubkeysEvent
     | NetDnsEvent
+    | ClipboardEvent
     | NetTrafficEvent
     | NetHttpEvent
     | ExceptionEvent,

@@ -40,6 +40,7 @@ from speakeasy.profiler_events import (
     MemReadEvent,
     MemWriteEvent,
     ModuleLoadEvent,
+    ClipboardEvent,
     NetDnsEvent,
     NetHttpEvent,
     NetTrafficEvent,
@@ -550,6 +551,17 @@ class Profiler:
 
         run.events.append(event)
         self.last_event = event
+
+    def record_clipboard_event(self, run, pos: TracePosition, action, fmt, text=None):
+        """
+        Log clipboard reads/writes for the emulation report (consecutive duplicates are dropped)
+        """
+        for evt in reversed(run.events):
+            if isinstance(evt, ClipboardEvent):
+                if evt.action == action and evt.text == text and evt.format == fmt:
+                    return
+                break
+        run.events.append(ClipboardEvent(pos=pos, action=action, format=fmt, text=text))
 
     def record_dns_event(self, run, pos: TracePosition, domain, ip=""):
         """

@@ -61,6 +61,7 @@ AssemblyLine for further static analysis.
 | 4. Emulated network activity | DNS/network/HTTP-shaped API calls (simulated responses, not real traffic) — still a useful C2/beacon-shaped indicator. |
 | 5. Emulation errors encountered | Session- or entry-point-level errors were recorded (e.g. an unsupported API). |
 | 6. Emulation incomplete or failed | Timeout, or no parseable report was produced. |
+| 7. Clipboard activity | The sample used the clipboard. Speakeasy's emulated clipboard offers synthetic wallet-address-shaped text (BTC, ETH, LTC, DOGE, TRX, XRP, SOL, XMR formats), so a sample that writes back different text is a clipboard hijacker: scored 500 as `clipboard_replaced`, with the substituted text tagged `file.string.extracted`. Plain reads score 0. |
 
 ## Submission parameters
 
