@@ -101,6 +101,24 @@ heuristics:
       clipboard_access: 0
       clipboard_replaced: 500
     attack_id: T1115
+  - heur_id: 8
+    name: Anti-analysis or environment-check APIs
+    description: The sample called APIs used to detect a debugger, sandbox or virtual machine (debugger checks, firmware tables, cursor position, memory size, uptime).
+    filetype: ".*"
+    score: 0
+    signature_score_map:
+      anti_debug: 100
+      environment_check: 0
+    attack_id: T1497
+  - heur_id: 9
+    name: Data decrypted during emulation
+    description: The sample decrypted data through the emulated crypto API (AES via CNG). A large decrypted blob is typically an embedded payload that a crypter or loader unpacks; it is extracted for further analysis.
+    filetype: ".*"
+    score: 0
+    signature_score_map:
+      crypto_operation: 0
+      payload_decrypted: 300
+    attack_id: T1027
 
 docker_config:
   image: kylemc54321/assemblyline-service-speakeasy:$SERVICE_TAG

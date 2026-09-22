@@ -255,6 +255,14 @@ class ApiHandler:
                 run, pos, path, event_type, value_name, data, handle, disposition, access, buffer, size
             )
 
+    def record_crypto_event(self, operation, algorithm, mode, key, iv, input_size, output_size, plaintext=b""):
+        profiler = self.emu.get_profiler()
+        if profiler:
+            run = self.emu.get_current_run()
+            pos = self._get_current_trace_position()
+            profiler.record_crypto_event(run, pos, operation, algorithm, mode, key, iv, input_size, output_size,
+                                         plaintext)
+
     def record_clipboard_event(self, action, fmt, text=None):
         logger.debug("clipboard: %s %s %r", action, fmt, text)
         profiler = self.emu.get_profiler()

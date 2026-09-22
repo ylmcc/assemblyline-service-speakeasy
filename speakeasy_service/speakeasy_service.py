@@ -29,6 +29,7 @@ from assemblyline_v4_service.common.result import (
 )
 from assemblyline_v4_service.common.task import PARENT_RELATION
 
+from speakeasy_service import report_views as views
 from speakeasy_service.runner import resolve_data_ref, run_speakeasy
 
 _CROSS_PROCESS_EVENTS = {"mem_alloc", "mem_write", "mem_protect", "mem_free", "thread_create", "thread_inject"}
@@ -120,10 +121,18 @@ class Speakeasy(ServiceBase):
         info.set_item("filetype", report.get("filetype") or "unknown")
         info.set_item("entry_points", len(entry_points))
         info.set_item("runtime_seconds", report.get("emulation_total_runtime"))
+        all_events = [ev for ep in entry_points for ev in (ep.get("events") or [])]
+        calls = views.api_events(all_events)
+        if entry_points:
+            ep0 = entry_points[0]
+            info.set_item("entry_point", f"{ep0.get('ep_type', '?')} at {ep0.get('start_addr', '?')}")
+            info.set_item("stopped_because", views.stop_reason(ep0, views.api_events(ep0.get("events") or [])))
+            mem = views.memory_summary(ep0)
+            info.set_item("memory_regions", f"{mem['regions']} ({mem['executable_regions']} executable, "
+                                            f"{mem['writable_executable_regions']} writable and executable)")
+        info.set_item("api_calls", f"{len(calls)} ({len({c.get('api_name') for c in calls})} distinct)")
         info.set_heuristic(1, signature="emulation_completed")
         result.add_section(info)
-
-        all_events = [ev for ep in entry_points for ev in (ep.get("events") or [])]
 
         injection_events = [
             ev for ev in all_events
@@ -211,6 +220,8 @@ class Speakeasy(ServiceBase):
                 clip_table.set_heuristic(7, signature="clipboard_access")
             result.add_section(clip_table)
 
+        self._add_detail_sections(result, request, report, entry_points, all_events, calls, max_rows)
+
         top_level_errors = report.get("errors") or []
         ep_errors = [(i, ep) for i, ep in enumerate(entry_points) if ep.get("error")]
         if top_level_errors or ep_errors:
@@ -233,6 +244,67 @@ class Speakeasy(ServiceBase):
 
         request.result = result
         self._save_log(request, speakeasy)
+
+    def _add_detail_sections(self, result, request, report, entry_points, all_events, calls, max_rows) -> None:
+        """Sections that describe what the sample did in detail: crypto (with the decrypted data extracted),
+        notable API families, the image layout, strings that only exist at run time, and the API trace."""
+        crypto = views.crypto_operations(all_events)
+        if crypto:
+            table = ResultTableSection("Cryptographic operations (decrypted data is extracted)")
+            largest = 0
+            for n, ev in enumerate(crypto[:max_rows], 1):
+                key = ev.get("key", "")
+                table.add_row(TableRow(
+                    operation=ev.get("operation", ""), cipher=f"{ev.get('algorithm', '')}-{len(key) * 4}-{ev.get('mode', '')}",
+                    key=key, iv=ev.get("iv") or "", bytes_in=ev.get("input_size", 0), bytes_out=ev.get("output_size", 0)))
+                data = resolve_data_ref(report, ev.get("data_ref") or "")
+                if data:
+                    largest = max(largest, len(data))
+                    path = os.path.join(self.working_directory, f"crypto_{n}_{ev.get('operation')}.bin")
+                    with open(path, "wb") as f:
+                        f.write(data)
+                    request.add_extracted(
+                        path, f"{'decrypted' if ev.get('operation') == 'decrypt' else 'plaintext'}_{n}.bin",
+                        f"Plaintext of a {ev.get('algorithm')} {ev.get('mode')} {ev.get('operation')} done during emulation",
+                        parent_relation=PARENT_RELATION.DYNAMIC)
+            decrypted = any(ev.get("operation") == "decrypt" for ev in crypto)
+            table.set_heuristic(9, signature="payload_decrypted" if decrypted and largest >= 1024 else "crypto_operation")
+            result.add_section(table)
+
+        categories = views.categorise(calls)
+        if categories:
+            table = ResultTableSection("Notable API activity")
+            for category, info in sorted(categories.items(), key=lambda kv: -kv[1]["count"]):
+                table.add_row(TableRow(category=category.replace("_", " "), calls=info["count"],
+                                       apis=", ".join(info["apis"][:8]) + (" …" if len(info["apis"]) > 8 else "")))
+            anti = [c for c in ("anti_debug", "environment_check") if c in categories]
+            if anti:
+                table.set_heuristic(8, signature=anti[0])
+            result.add_section(table)
+
+        for i, ep in enumerate(entry_points):
+            sections = views.image_sections(ep)
+            if sections:
+                table = ResultTableSection("Image sections" + (f" (entry point {i})" if len(entry_points) > 1 else ""))
+                for row in sections[:max_rows]:
+                    table.add_row(TableRow(**row))
+                result.add_section(table)
+            break
+
+        runtime = views.runtime_strings(report, max_rows)
+        if runtime:
+            result.add_section(ResultSection("Strings present in memory at run time but not in the file",
+                                             body="\n".join(runtime)))
+
+        if calls:
+            rows, omitted = views.collapse_trace(calls, max_rows)
+            table = ResultTableSection("API call trace")
+            for row in rows:
+                table.add_row(TableRow(**row))
+            if omitted:
+                table.add_subsection(ResultSection(
+                    f"{omitted} more call(s) not shown", body="The full trace is in speakeasy_report.json."))
+            result.add_section(table)
 
     def _save_log(self, request: ServiceRequest, speakeasy) -> None:
         log_path = os.path.join(self.working_directory, "speakeasy_report.json")

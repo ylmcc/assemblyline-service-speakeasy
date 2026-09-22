@@ -546,6 +546,24 @@ class RegListSubkeysEvent(Event):
     handle: str | None = Field(default=None, description="Registry handle used for enumeration, when available.")
 
 
+class CryptoEvent(Event):
+    """Records a symmetric-crypto operation the sample performed through the emulated CNG API.
+
+    A sample that decrypts a large embedded blob and then continues with the result is typically a
+    crypter/loader; ``data_ref`` points at the plaintext (the decrypt output, or the encrypt input).
+    """
+
+    event: Literal["crypto"] = Field(default="crypto", description="Discriminator for crypto events.")
+    operation: Literal["encrypt", "decrypt"] = Field(description="Direction of the operation.")
+    algorithm: str = Field(description="Algorithm name, e.g. AES.")
+    mode: str = Field(description="Chaining mode, e.g. CBC.")
+    key: str = Field(description="Key material, hex encoded.")
+    iv: str | None = Field(default=None, description="Initialisation vector, hex encoded.")
+    input_size: int = Field(description="Size in bytes of the data passed in.")
+    output_size: int = Field(description="Size in bytes of the data produced.")
+    data_ref: str | None = Field(default=None, description="Artifact reference to the plaintext.")
+
+
 class ClipboardEvent(Event):
     """Records clipboard reads and writes made by the sample.
 
@@ -654,6 +672,7 @@ AnyEvent = Annotated[
     | RegListSubkeysEvent
     | NetDnsEvent
     | ClipboardEvent
+    | CryptoEvent
     | NetTrafficEvent
     | NetHttpEvent
     | ExceptionEvent,
