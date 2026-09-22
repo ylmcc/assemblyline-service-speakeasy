@@ -81,6 +81,7 @@ def run_speakeasy(
     raw_arch: str = "",
     raw_offset_hex: str = "",
     allow_self_modifying_writes: bool = True,
+    allow_internet: bool = False,
 ) -> SpeakeasyResult:
     report_fd, report_path = tempfile.mkstemp(dir=work_dir, prefix="speakeasy_report_", suffix=".json")
     os.close(report_fd)
@@ -96,6 +97,7 @@ def run_speakeasy(
         "--analysis-strings" if extract_strings else "--no-analysis-strings",
         "--memory-allow-self-modifying-writes" if allow_self_modifying_writes
         else "--no-memory-allow-self-modifying-writes",
+        "--network-allow-internet" if allow_internet else "--network-no-allow-internet",
     ]
     if emulate_children:
         cmd.append("--emulate-children")

@@ -95,6 +95,7 @@ class Speakeasy(ServiceBase):
             raw_arch=request.get_param("raw_arch"),
             raw_offset_hex=request.get_param("raw_offset_hex"),
             allow_self_modifying_writes=request.get_param("allow_self_modifying_writes"),
+            allow_internet=request.get_param("allow_internet"),
         )
 
         result = Result()
@@ -130,6 +131,8 @@ class Speakeasy(ServiceBase):
             mem = views.memory_summary(ep0)
             info.set_item("memory_regions", f"{mem['regions']} ({mem['executable_regions']} executable, "
                                             f"{mem['writable_executable_regions']} writable and executable)")
+        info.set_item("internet_access", "enabled: real connections to public addresses"
+                      if request.get_param("allow_internet") else "disabled (simulated network only)")
         info.set_item("api_calls", f"{len(calls)} ({len({c.get('api_name') for c in calls})} distinct)")
         info.set_heuristic(1, signature="emulation_completed")
         result.add_section(info)

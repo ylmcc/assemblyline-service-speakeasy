@@ -1,5 +1,6 @@
 # Copyright (C) 2020 FireEye, Inc. All Rights Reserved.
 
+from io import BytesIO
 from socket import inet_aton
 from typing import Any
 from urllib.parse import urlparse
@@ -7,6 +8,7 @@ from urllib.parse import urlparse
 import speakeasy.windows.netman as netman
 import speakeasy.winenv.arch as _arch
 import speakeasy.winenv.defs.wininet as windefs
+import speakeasy.winenv.livenet as livenet
 
 from .. import api
 
@@ -256,7 +258,25 @@ class Wininet(api.ApiHandler):
         req_str = req.format_http_request(headers=headers)
 
         self.record_http_event(srv, port, headers=req_str, body=body, secure=req.is_secure())
+
+        if getattr(emu.config.network, "allow_internet", False):
+            self._try_live_fetch(req, srv, port, req_str, body)
+
         return rv
+
+    def _try_live_fetch(self, req, server, port, header_text, body):
+        """Best-effort real HTTP round trip. On any failure req.response is left untouched, so
+        get_response() falls back to the configured simulated response as before."""
+        ip = livenet.resolve_public(server, port)
+        if not ip:
+            return
+        # format_http_request() uses bare \n; a real server expects \r\n and a blank-line
+        # terminator ahead of the body.
+        wire_headers = header_text.replace("\r\n", "\n").replace("\n", "\r\n").rstrip("\r\n")
+        request = wire_headers.encode("latin-1", errors="replace") + b"\r\n\r\n" + body
+        raw = livenet.fetch_http(ip, port, req.is_secure(), request)
+        if raw:
+            req.response = BytesIO(raw)
 
     @apihook("InternetErrorDlg", argc=5, conv=_arch.CALL_CONV_STDCALL)
     def InternetErrorDlg(self, emu, argv, ctx: api.ApiContext = None):

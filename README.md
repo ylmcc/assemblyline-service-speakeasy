@@ -9,6 +9,16 @@ filesystem, registry, and network activity — using a vendored copy of
 static-only pass would miss: unpacking, process injection, dropped files, registry
 persistence, and C2-shaped network indicators.
 
+## Real internet access (off by default)
+
+With `allow_internet` set, TCP/HTTP calls (winsock, WinInet) to **public** addresses become real
+instead of simulated, so a sample reaches its actual C2/download server. Loopback, RFC 1918,
+link-local, multicast and cloud-metadata addresses are never reachable this way regardless of the
+setting -- see `speakeasy_service/vendor/speakeasy-src/speakeasy/winenv/livenet.py`. DNS lookups
+made through the emulated resolver stay simulated; only a connect to an address the sample already
+has (or that a real DNS answer would produce) goes real. The pod needs `allow_internet_access:
+true` for this, and the service is flagged `is_external: true`.
+
 ## Safety: this is pure emulation, not real execution
 
 Speakeasy is a CPU-instruction emulator (built on [Unicorn](https://www.unicorn-engine.org/)):

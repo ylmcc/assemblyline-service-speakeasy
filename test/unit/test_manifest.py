@@ -32,9 +32,14 @@ def test_docker_image_matches_version_file():
     assert re.match(r"^\d+\.\d+\.\d+\.stable\d+$", version)
 
 
-def test_no_internet_access():
+def test_internet_access_is_gated_behind_the_allow_internet_submission_param():
+    """The pod can reach the internet, but only a sample submitted with allow_internet=true (off
+    by default) ever gets a real connection; see winenv/livenet.py for the address gate."""
     manifest = _manifest()
-    assert manifest["docker_config"]["allow_internet_access"] is False
+    assert manifest["docker_config"]["allow_internet_access"] is True
+    assert manifest["is_external"] is True
+    param = next(p for p in manifest["submission_params"] if p["name"] == "allow_internet")
+    assert param["type"] == "bool" and param["default"] is False
 
 
 def test_vendor_source_present():

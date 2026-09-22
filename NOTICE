@@ -8,7 +8,7 @@ This repository vendors the source of Speakeasy:
 
 speakeasy_service/vendor/speakeasy-src is a copy of the upstream `speakeasy` package plus
 the packaging files needed to `pip install` it (pyproject.toml, setup.py, MANIFEST.in),
-with four local modifications (described below). It is built and installed into this service's Docker image (see
+with six local modifications (described below). It is built and installed into this service's Docker image (see
 Dockerfile) and invoked as a subprocess via its own `speakeasy` CLI entry point.
 
 Local modification -- emulated clipboard. Upstream implements only GetClipboardSequenceNumber
@@ -40,6 +40,20 @@ Local modification -- version.dll. Added speakeasy/winenv/api/usermode/version.p
 version information) and a "version" entry in speakeasy/config.py's default user modules, because a
 reflective loader that cannot load one of its payload's imports aborts. Modules stay absent by default
 (modules_always_exist is unchanged), so probes for sandbox DLLs still fail as they should.
+
+Local modification -- optional real internet access. A new network.allow_internet config field
+(default false) gates real TCP connects/sends/receives (winsock, speakeasy/winenv/api/usermode/
+ws2_32.py) and real HTTP requests (WinInet, speakeasy/winenv/api/usermode/wininet.py) to PUBLIC
+addresses through speakeasy/winenv/livenet.py; loopback, RFC 1918, link-local, multicast and cloud
+metadata addresses are always refused regardless of this setting. DNS stays simulated either way.
+Off by default; this service turns it on only when a submission sets allow_internet=true.
+
+Local modification -- unmapped reads no longer end the run. windows/winemu.py's
+_handle_invalid_read already mapped the faulting page zero-filled (as invalid writes do); it now
+also lets emulation continue afterwards instead of stopping, so a sample that briefly reads a
+stale or wrong pointer (e.g. a bad self-locate/header scan) can still reach the rest of its logic.
+Each occurrence is still recorded on the run, and a run that keeps faulting like this in a loop
+(over 1000 recovered reads) still ends, so this cannot spin forever.
 
 The upstream git submodules deps/win32json (https://github.com/marlersoft/win32json,
 commit 071df4995290b72320010ecfc2fca51946b5c6b4) and deps/phnt

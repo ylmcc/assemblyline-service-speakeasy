@@ -2331,14 +2331,24 @@ class WindowsEmulator(BinaryEmulator):
                 return True
         fakeout = address & 0xFFFFFFFFFFFFF000
         self.mem_map(self.page_size, base=fakeout)
-
-        error = self.get_error_info("invalid_read", address, access_type="read")
-        self.curr_run.error = error  # type: ignore[union-attr]
-
-        # Let the next run know to remove this map since its
-        # technically invalid
         self.tmp_maps.append((fakeout, self.page_size))
-        self.on_run_complete()
+
+        # Answer the read with zero-filled memory (mapped above) and keep running, instead of
+        # ending the run here, so a sample that briefly reads off a bad/stale pointer (an
+        # off-by-a-bit scan, a stale cached address, a check against data that never got filled
+        # in) can still reach the rest of its logic -- the same way real Windows would just hand
+        # back whatever bytes happen to be at a mapped-but-unrelated address rather than crash.
+        # Each occurrence is still recorded on the run so the report stays honest about it; a
+        # sample that keeps faulting like this in a loop is a real bug and is capped rather than
+        # spun forever.
+        error = self.get_error_info("invalid_read", address, access_type="read")
+        recovered = getattr(self.curr_run, "recovered_read_errors", None)
+        if recovered is None:
+            recovered = self.curr_run.recovered_read_errors = []  # type: ignore[union-attr]
+        recovered.append(error)
+        if len(recovered) > 1000:
+            self.curr_run.error = error  # type: ignore[union-attr]
+            self.on_run_complete()
         return True
 
     def _handle_prot_fetch(self, emu, address, size, value):

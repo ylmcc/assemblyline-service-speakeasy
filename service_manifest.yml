@@ -18,7 +18,7 @@ file_required: true
 timeout: 300
 disable_cache: false
 enabled: true
-is_external: false
+is_external: true
 licence_count: 0
 
 submission_params:
@@ -42,6 +42,10 @@ submission_params:
     type: bool
     default: true
     value: true
+  - name: allow_internet
+    type: bool
+    default: false
+    value: false
   - name: raw_mode
     type: bool
     default: false
@@ -125,4 +129,4 @@ docker_config:
   cpu_cores: 1
   ram_mb_min: 512
   ram_mb: 3072
-  allow_internet_access: false
+  allow_internet_access: true

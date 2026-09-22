@@ -113,7 +113,7 @@ class _Request:
         self.params = {
             "max_events_displayed": 50, "emulation_timeout_seconds": 30, "max_emulation_memory_mb": 512,
             "emulate_children": False, "extract_strings": True, "raw_mode": False, "raw_arch": "",
-            "raw_offset_hex": "", "allow_self_modifying_writes": True,
+            "raw_offset_hex": "", "allow_self_modifying_writes": True, "allow_internet": False,
         }
 
     def get_param(self, name):
