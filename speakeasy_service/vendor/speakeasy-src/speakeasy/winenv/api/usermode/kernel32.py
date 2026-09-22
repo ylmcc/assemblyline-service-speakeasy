@@ -3111,6 +3111,35 @@ class Kernel32(api.ApiHandler):
 
         return rv
 
+    @apihook("GetSystemPreferredUILanguages", argc=4)
+    def GetSystemPreferredUILanguages(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        BOOL GetSystemPreferredUILanguages(
+          DWORD  dwFlags,
+          PULONG pulNumLanguages,
+          PZZWSTR pwszLanguagesBuffer,
+          PULONG pcchLanguagesBuffer
+        );
+        """
+        dwFlags, pulNumLanguages, pwszLanguagesBuffer, pcchLanguagesBuffer = argv
+        # A MUI_LANGUAGE_NAME-style double-null-terminated multi-string with one language.
+        buf = "en-US\x00".encode("utf-16-le") + b"\x00\x00"
+        needed = len(buf) // 2
+
+        if pulNumLanguages:
+            self.mem_write(pulNumLanguages, (1).to_bytes(4, "little"))
+
+        have = int.from_bytes(self.mem_read(pcchLanguagesBuffer, 4), "little") if pcchLanguagesBuffer else 0
+        if not pwszLanguagesBuffer or have < needed:
+            # Caller is asking how big a buffer it needs, the usual two-call pattern.
+            if pcchLanguagesBuffer:
+                self.mem_write(pcchLanguagesBuffer, needed.to_bytes(4, "little"))
+            return 1
+
+        self.mem_write(pwszLanguagesBuffer, buf)
+        self.mem_write(pcchLanguagesBuffer, needed.to_bytes(4, "little"))
+        return 1
+
     @apihook("LCMapStringEx", argc=9)
     def LCMapStringEx(self, emu, argv, ctx: api.ApiContext = None):
         """
