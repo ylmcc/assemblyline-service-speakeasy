@@ -109,10 +109,11 @@ def test_replacements_pair_each_read_with_the_write_that_follows():
 class _Request:
     def __init__(self, path):
         self.file_path, self.result, self.supplementary = path, None, []
+        self.extracted_names = []
         self.params = {
             "max_events_displayed": 50, "emulation_timeout_seconds": 30, "max_emulation_memory_mb": 512,
             "emulate_children": False, "extract_strings": True, "raw_mode": False, "raw_arch": "",
-            "raw_offset_hex": "", "allow_self_modifying_writes": True,
+            "raw_offset_hex": "", "allow_self_modifying_writes": True, "allow_internet": False,
         }
 
     def get_param(self, name):
@@ -121,13 +122,14 @@ class _Request:
     def add_supplementary(self, path, name, desc):
         self.supplementary.append(name)
 
-    def add_extracted(self, *args, **kwargs):
+    def add_extracted(self, path, name, *args, **kwargs):
+        self.extracted_names.append(name)
         return True
 
 
-def _run_service(tmp_path, events):
+def _run_service(tmp_path, events, data=None):
     report = {"report_version": "4.0.0", "arch": "amd64", "filetype": "dll", "errors": [],
-              "emulation_total_runtime": 0.1, "data": {},
+              "emulation_total_runtime": 0.1, "data": data or {},
               "entry_points": [{"ep_type": "dll_entry", "start_addr": "0x1000", "events": events}]}
 
     def fake_run(cmd, **kwargs):
@@ -146,6 +148,7 @@ def _run_service(tmp_path, events):
     with patch("speakeasy_service.runner.subprocess.run", side_effect=fake_run):
         svc.execute(req)
     _run_service.last_service = svc
+    _run_service.last_request = req
     return {s.title_text: s for s in req.result.sections}
 
 

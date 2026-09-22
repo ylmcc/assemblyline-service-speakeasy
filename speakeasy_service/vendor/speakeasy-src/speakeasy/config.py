@@ -234,6 +234,7 @@ DEFAULT_CONFIG_DATA = {
             {"name": "iphlpapi", "base_addr": "0x5fd00000", "path": "C:\\Windows\\system32\\iphlpapi.dll"},
             {"name": "sfc_os", "base_addr": "0x5fe00000", "path": "C:\\Windows\\system32\\sfc_os.dll"},
             {"name": "winmm", "base_addr": "0x5ff00000", "path": "C:\\Windows\\system32\\winmm.dll"},
+            {"name": "version", "base_addr": "0x60100000", "path": "C:\\Windows\\system32\\version.dll"},
             {
                 "name": "bcryptprimitives",
                 "base_addr": "0x60000000",
@@ -437,6 +438,16 @@ class NetworkConfig(BaseModel):
     http: HttpConfig | None = Field(default=None, description="HTTP emulation settings.")
     winsock: WinsockConfig | None = Field(default=None, description="Winsock emulation settings.")
     adapters: list[NetworkAdapterConfig] = Field(default_factory=list, description="Network adapters returned by APIs.")
+    allow_internet: bool = Field(
+        default=False,
+        description=(
+            "Make TCP connects/sends/receives (winsock) and HTTP requests (WinInet) to PUBLIC internet "
+            "addresses real instead of simulated. Loopback, RFC 1918, link-local, multicast and cloud "
+            "metadata addresses are always refused, even with this on -- the sample can never reach the "
+            "host or LAN this way. DNS lookups made through the emulated resolver stay simulated "
+            "(sinkholed); only connects to an already-resolved IP go real."
+        ),
+    )
 
 
 class ProcessConfig(BaseModel):

@@ -6,6 +6,7 @@ from typing import Any
 
 import speakeasy.winenv.arch as _arch
 import speakeasy.winenv.defs.windows.windows as windefs
+import speakeasy.winenv.livenet as livenet
 import speakeasy.winenv.defs.winsock.winsock as winsock
 import speakeasy.winenv.defs.winsock.ws2_32 as wstypes
 
@@ -353,6 +354,9 @@ class Ws2_32(api.ApiHandler):
 
         self.record_network_event(raddr, rport, typ="connect", proto=proto, method="winsock.connect")
 
+        if getattr(emu.config.network, "allow_internet", False) and proto in ("tcp", "udp"):
+            socket.live = (livenet.open_tcp(raddr, rport) if proto == "tcp" else livenet.open_udp())
+
         argv[1] = f"{raddr}:{rport}"
 
         return rv
@@ -597,7 +601,13 @@ class Ws2_32(api.ApiHandler):
         peek = flags & winsock.MSG_PEEK
 
         sock = self.netman.get_socket(s)
-        data = sock.get_recv_data(blen, peek)
+        live = getattr(sock, "live", None)
+        if live is not None and not peek:
+            data = live.recv(blen)
+            if data is None:
+                return 0xFFFFFFFF  # SOCKET_ERROR: nothing arrived yet, matches a non-blocking WSAEWOULDBLOCK caller
+        else:
+            data = sock.get_recv_data(blen, peek)
         rv = len(data)
 
         self.mem_write(buf, data)
@@ -645,6 +655,10 @@ class Ws2_32(api.ApiHandler):
 
         self.record_network_event(raddr, rport, typ="data_out", proto=proto, method="winsock.send", data=data)
 
+        live = getattr(socket, "live", None)
+        if live is not None:
+            live.send(data, addr=(raddr, rport) if proto == "udp" else None)
+
         return len(data)
 
     @apihook("closesocket", argc=1, ordinal=3)
@@ -663,6 +677,9 @@ class Ws2_32(api.ApiHandler):
             # This isnt a valid socket, return invalid
             rv = winsock.WSAENOTSOCK
         else:
+            live = getattr(socket, "live", None)
+            if live is not None:
+                live.close()
             self.netman.close_socket(s)
 
         return rv

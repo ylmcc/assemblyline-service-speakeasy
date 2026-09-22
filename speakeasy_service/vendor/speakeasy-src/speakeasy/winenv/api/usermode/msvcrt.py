@@ -3,6 +3,7 @@
 import math
 import struct
 from typing import Any
+import datetime as _dt
 
 import speakeasy.winenv.arch as e_arch
 import speakeasy.winenv.defs.windows.windows as windef
@@ -442,6 +443,274 @@ class Msvcrt(api.ApiHandler):
         """
 
         self.exit_process()
+    @apihook("abort", argc=0, conv=e_arch.CALL_CONV_CDECL)
+    def abort(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        void abort(void);
+        """
+        self.exit_process()
+
+    @apihook("realloc", argc=2, conv=e_arch.CALL_CONV_CDECL)
+    def realloc(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        void *realloc(
+            void   *memblock,
+            size_t newsize
+            );
+        """
+        memblock, newsize = argv
+        if not memblock:
+            return self.heap_alloc(newsize, heap="HeapAlloc")
+        if not newsize:
+            self.mem_free(memblock)
+            return 0
+        # A fresh block plus a copy of the old contents (the caller cannot rely on realloc growing in
+        # place anyway); the old size comes from the heap's own allocation record, not a guess.
+        old_size = next((sz for addr, sz, _ in reversed(emu.heap_allocs) if addr == memblock), newsize)
+        new_chunk = self.heap_alloc(newsize, heap="HeapAlloc")
+        data = self.mem_read(memblock, min(old_size, newsize))
+        if data:
+            self.mem_write(new_chunk, data)
+        self.mem_free(memblock)
+        return new_chunk
+
+    @apihook("towlower", argc=1, conv=e_arch.CALL_CONV_CDECL)
+    def towlower(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        wint_t towlower(
+            wint_t c
+            );
+        """
+        (c,) = argv
+        try:
+            return ord(chr(c).lower())
+        except (ValueError, OverflowError):
+            return c
+
+    @apihook("strtol", argc=3, conv=e_arch.CALL_CONV_CDECL)
+    def strtol(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        long strtol(
+            const char *strSource,
+            char **endptr,
+            int base
+            );
+        """
+        return self._strtoint(emu, argv, wide=False)
+
+    @apihook("wcstoull", argc=3, conv=e_arch.CALL_CONV_CDECL)
+    def wcstoull(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        unsigned long long wcstoull(
+            const wchar_t *strSource,
+            wchar_t **endptr,
+            int base
+            );
+        """
+        return self._strtoint(emu, argv, wide=True)
+
+    def _strtoint(self, emu, argv, wide):
+        strSource, endptr, base = argv
+        if not strSource:
+            return 0
+        text = self.read_wide_string(strSource) if wide else self.read_string(strSource)
+        i, n = 0, len(text)
+        while i < n and text[i] in " \t":
+            i += 1
+        start = i
+        if i < n and text[i] in "+-":
+            i += 1
+        digits = "0123456789abcdefghijklmnopqrstuvwxyz"[:base if base else 10]
+        while i < n and text[i].lower() in digits:
+            i += 1
+        try:
+            value = int(text[start:i], base or 10)
+        except ValueError:
+            value = 0
+        if endptr:
+            consumed = i
+            width = 2 if wide else 1
+            self.mem_write(endptr, (strSource + consumed * width).to_bytes(self.get_ptr_size(), "little"))
+        return value
+
+    @apihook("fflush", argc=1, conv=e_arch.CALL_CONV_CDECL)
+    def fflush(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        int fflush(
+            FILE *stream
+            );
+        """
+        # Nothing is buffered in the emulated filesystem, so every write already landed.
+        return 0
+
+    @apihook("fgetc", argc=1, conv=e_arch.CALL_CONV_CDECL)
+    def fgetc(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        int fgetc(
+            FILE *stream
+            );
+        """
+        (stream,) = argv
+        hfile = self.file_streams.get(stream)
+        if hfile is None:
+            return -1
+        fobj = self.file_get(hfile)
+        if not fobj:
+            return -1
+        data = fobj.get_data(size=1)
+        return data[0] if data else -1  # -1 == EOF
+
+    @apihook("ungetc", argc=2, conv=e_arch.CALL_CONV_CDECL)
+    def ungetc(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        int ungetc(
+            int c,
+            FILE *stream
+            );
+        """
+        c, stream = argv
+        hfile = self.file_streams.get(stream)
+        if hfile is None or c == -1:
+            return -1
+        fobj = self.file_get(hfile)
+        if fobj and fobj.curr_offset > 0:
+            fobj.curr_offset -= 1
+        return c
+
+    @apihook("fwrite", argc=4, conv=e_arch.CALL_CONV_CDECL)
+    def fwrite(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        size_t fwrite(
+            const void *ptr,
+            size_t size,
+            size_t count,
+            FILE *stream
+            );
+        """
+        ptr, size, count, stream = argv
+        hfile = self.file_streams.get(stream)
+        if not ptr or size == 0 or count == 0 or hfile is None:
+            return 0
+        fobj = self.file_get(hfile)
+        if not fobj:
+            return 0
+        data = self.mem_read(ptr, size * count)
+        fobj.add_data(data)
+        return len(data) // size
+
+    @apihook("setvbuf", argc=4, conv=e_arch.CALL_CONV_CDECL)
+    def setvbuf(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        int setvbuf(
+            FILE   *stream,
+            char   *buffer,
+            int    mode,
+            size_t size
+            );
+        """
+        return 0
+
+    @apihook("fgetpos", argc=2, conv=e_arch.CALL_CONV_CDECL)
+    def fgetpos(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        int fgetpos(
+            FILE    *stream,
+            fpos_t  *pos
+            );
+        """
+        stream, pos = argv
+        hfile = self.file_streams.get(stream)
+        if hfile is None or not pos:
+            return -1
+        fobj = self.file_get(hfile)
+        if not fobj:
+            return -1
+        self.mem_write(pos, (fobj.tell() or 0).to_bytes(8, "little"))
+        return 0
+
+    @apihook("fsetpos", argc=2, conv=e_arch.CALL_CONV_CDECL)
+    def fsetpos(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        int fsetpos(
+            FILE          *stream,
+            const fpos_t  *pos
+            );
+        """
+        stream, pos = argv
+        hfile = self.file_streams.get(stream)
+        if hfile is None or not pos:
+            return -1
+        fobj = self.file_get(hfile)
+        if not fobj:
+            return -1
+        offset = int.from_bytes(self.mem_read(pos, 8), "little")
+        fobj.seek(offset, 0)
+        return 0
+
+    @apihook("_fseeki64", argc=3, conv=e_arch.CALL_CONV_CDECL)
+    def _fseeki64(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        int _fseeki64(
+            FILE     *stream,
+            __int64  offset,
+            int      origin
+            );
+        """
+        return self.fseek(emu, argv, ctx)
+
+    @apihook("_lock_file", argc=1, conv=e_arch.CALL_CONV_CDECL)
+    def _lock_file(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        void _lock_file(
+            FILE *stream
+            );
+        """
+        return
+
+    @apihook("_unlock_file", argc=1, conv=e_arch.CALL_CONV_CDECL)
+    def _unlock_file(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        void _unlock_file(
+            FILE *stream
+            );
+        """
+        return
+
+    @apihook("_time64", argc=1, conv=e_arch.CALL_CONV_CDECL)
+    def _time64(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        __time64_t _time64(
+            __time64_t *destTime
+            );
+        """
+        (destTime,) = argv
+        now = int(_dt.datetime.now(_dt.timezone.utc).timestamp())
+        if destTime:
+            self.mem_write(destTime, now.to_bytes(8, "little", signed=True))
+        return now
+
+    @apihook("_localtime64_s", argc=2, conv=e_arch.CALL_CONV_CDECL)
+    def _localtime64_s(self, emu, argv, ctx: api.ApiContext = None):
+        """
+        errno_t _localtime64_s(
+            struct tm    *tmDest,
+            __time64_t const *sourceTime
+            );
+        """
+        tmDest, sourceTime = argv
+        if not tmDest:
+            return 22  # EINVAL
+        timestamp = int.from_bytes(self.mem_read(sourceTime, 8), "little", signed=True) if sourceTime else 0
+        try:
+            tm = _dt.datetime.fromtimestamp(timestamp, _dt.timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            tm = _dt.datetime(1970, 1, 1, tzinfo=_dt.timezone.utc)
+        # struct tm: 9 x 4-byte ints (sec, min, hour, mday, mon, year-1900, wday, yday, isdst).
+        fields = [tm.second, tm.minute, tm.hour, tm.day, tm.month - 1, tm.year - 1900,
+                 (tm.weekday() + 1) % 7, tm.timetuple().tm_yday - 1, 0]
+        self.mem_write(tmDest, b"".join(f.to_bytes(4, "little", signed=True) for f in fields))
+        return 0
+
 
     @apihook("_XcptFilter", argc=2, conv=e_arch.CALL_CONV_CDECL)
     def _XcptFilter(self, emu, argv, ctx: api.ApiContext = None):

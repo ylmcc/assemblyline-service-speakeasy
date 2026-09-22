@@ -8,7 +8,7 @@ This repository vendors the source of Speakeasy:
 
 speakeasy_service/vendor/speakeasy-src is a copy of the upstream `speakeasy` package plus
 the packaging files needed to `pip install` it (pyproject.toml, setup.py, MANIFEST.in),
-with one local modification (described below). It is built and installed into this service's Docker image (see
+with six local modifications (described below). It is built and installed into this service's Docker image (see
 Dockerfile) and invoked as a subprocess via its own `speakeasy` CLI entry point.
 
 Local modification -- emulated clipboard. Upstream implements only GetClipboardSequenceNumber
@@ -20,6 +20,40 @@ changes on every call), speakeasy/profiler_events.py (ClipboardEvent), speakeasy
 (record_clipboard_event) and speakeasy/winenv/api/api.py (record_clipboard_event). The emulated
 clipboard hands the sample one synthetic, wallet-address-shaped string per read (patterned
 text with invalid checksums, never real addresses) and records what the sample writes back.
+
+Local modification -- coalesced section protections. Upstream's PE loader
+(speakeasy/windows/winemu.py, load_image) calls mem_protect once per 4 KiB page. Each call splits
+a Unicorn memory region, so a PE with a very large section (a 32 MiB .data in one sample) spent
+longer loading than the whole emulation timeout and never started running. Adjacent pages with
+equal permissions are now protected in a single call (coalesce_page_perms); the resulting
+permissions are identical.
+
+Local modification -- CNG symmetric crypto. Upstream leaves BCryptSetProperty, BCryptGenerateSymmetricKey,
+BCryptEncrypt and BCryptDecrypt unimplemented (a generic stub that reports success but writes no key handle
+and no data), so a crypter that decrypts its payload with them never gets the plaintext. Changed files:
+speakeasy/winenv/api/usermode/bcrypt.py (AES with CBC, ECB, CFB and GCM through pycryptodome, keys and IVs
+tracked per handle; anything else returns STATUS_NOT_SUPPORTED), speakeasy/profiler_events.py (CryptoEvent),
+speakeasy/profiler.py and speakeasy/winenv/api/api.py (record_crypto_event). The plaintext is stored as a
+report artifact so the service can extract it.
+
+Local modification -- version.dll. Added speakeasy/winenv/api/usermode/version.py (every query reports no
+version information) and a "version" entry in speakeasy/config.py's default user modules, because a
+reflective loader that cannot load one of its payload's imports aborts. Modules stay absent by default
+(modules_always_exist is unchanged), so probes for sandbox DLLs still fail as they should.
+
+Local modification -- optional real internet access. A new network.allow_internet config field
+(default false) gates real TCP connects/sends/receives (winsock, speakeasy/winenv/api/usermode/
+ws2_32.py) and real HTTP requests (WinInet, speakeasy/winenv/api/usermode/wininet.py) to PUBLIC
+addresses through speakeasy/winenv/livenet.py; loopback, RFC 1918, link-local, multicast and cloud
+metadata addresses are always refused regardless of this setting. DNS stays simulated either way.
+Off by default; this service turns it on only when a submission sets allow_internet=true.
+
+Local modification -- unmapped reads no longer end the run. windows/winemu.py's
+_handle_invalid_read already mapped the faulting page zero-filled (as invalid writes do); it now
+also lets emulation continue afterwards instead of stopping, so a sample that briefly reads a
+stale or wrong pointer (e.g. a bad self-locate/header scan) can still reach the rest of its logic.
+Each occurrence is still recorded on the run, and a run that keeps faulting like this in a loop
+(over 1000 recovered reads) still ends, so this cannot spin forever.
 
 The upstream git submodules deps/win32json (https://github.com/marlersoft/win32json,
 commit 071df4995290b72320010ecfc2fca51946b5c6b4) and deps/phnt

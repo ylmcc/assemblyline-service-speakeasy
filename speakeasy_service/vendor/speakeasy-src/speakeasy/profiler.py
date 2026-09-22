@@ -41,6 +41,7 @@ from speakeasy.profiler_events import (
     MemWriteEvent,
     ModuleLoadEvent,
     ClipboardEvent,
+    CryptoEvent,
     NetDnsEvent,
     NetHttpEvent,
     NetTrafficEvent,
@@ -551,6 +552,17 @@ class Profiler:
 
         run.events.append(event)
         self.last_event = event
+
+    def record_crypto_event(self, run, pos: TracePosition, operation, algorithm, mode, key, iv, input_size, output_size,
+                            plaintext=b""):
+        """
+        Log a symmetric crypto operation; the plaintext is kept (capped) as an artifact
+        """
+        run.events.append(CryptoEvent(
+            pos=pos, operation=operation, algorithm=algorithm, mode=mode, key=key.hex(),
+            iv=iv.hex() if iv else None, input_size=input_size, output_size=output_size,
+            data_ref=self.put_binary_data(plaintext, limit=0x800000),
+        ))
 
     def record_clipboard_event(self, run, pos: TracePosition, action, fmt, text=None):
         """

@@ -9,6 +9,16 @@ filesystem, registry, and network activity — using a vendored copy of
 static-only pass would miss: unpacking, process injection, dropped files, registry
 persistence, and C2-shaped network indicators.
 
+## Real internet access (off by default)
+
+With `allow_internet` set, TCP/HTTP calls (winsock, WinInet) to **public** addresses become real
+instead of simulated, so a sample reaches its actual C2/download server. Loopback, RFC 1918,
+link-local, multicast and cloud-metadata addresses are never reachable this way regardless of the
+setting -- see `speakeasy_service/vendor/speakeasy-src/speakeasy/winenv/livenet.py`. DNS lookups
+made through the emulated resolver stay simulated; only a connect to an address the sample already
+has (or that a real DNS answer would produce) goes real. The pod needs `allow_internet_access:
+true` for this, and the service is flagged `is_external: true`.
+
 ## Safety: this is pure emulation, not real execution
 
 Speakeasy is a CPU-instruction emulator (built on [Unicorn](https://www.unicorn-engine.org/)):
@@ -62,6 +72,17 @@ AssemblyLine for further static analysis.
 | 5. Emulation errors encountered | Session- or entry-point-level errors were recorded (e.g. an unsupported API). |
 | 6. Emulation incomplete or failed | Timeout, or no parseable report was produced. |
 | 7. Clipboard activity | The sample used the clipboard. Speakeasy's emulated clipboard offers synthetic wallet-address-shaped text (BTC, ETH, LTC, DOGE, TRX, XRP, SOL, XMR formats), so a sample that writes back different text is a clipboard hijacker: scored 500 as `clipboard_replaced`, with the substituted text tagged `file.string.extracted` and the wallets added to the result ontology as a `MalwareConfig` `cryptocurrency` list (coin inferred from the address format; shape only, no checksum check). Plain reads score 0. |
+| 8. Anti-analysis or environment-check APIs | Debugger checks (`anti_debug`, scored 100) and sandbox/VM probes such as firmware tables, cursor position or memory size (`environment_check`, scored 0). |
+| 9. Data decrypted during emulation | AES (CBC, ECB, CFB, GCM) decryption through the emulated CNG API. A decrypted blob of 1 KiB or more scores 300 (`payload_decrypted`) and is extracted for analysis. |
+
+## What the result shows
+
+Besides the scored sections above, each run reports: an emulation summary (entry point, why it stopped, API and
+memory counts); **Cryptographic operations** (cipher, key, IV, sizes; the plaintext is extracted); **Notable API
+activity** (calls grouped into anti-debug, environment checks, crypto, dynamic resolution, memory, process, file,
+registry, network, persistence); **Image sections** (non-standard names and writable+executable sections noted);
+**strings present in memory at run time but not in the file**; and an **API call trace** in call order with
+repeats folded. The full trace is always in `speakeasy_report.json`.
 
 ## Submission parameters
 

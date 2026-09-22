@@ -10,7 +10,7 @@ description: >
   other way.
 
 accepts: executable/windows/.*
-rejects: empty|metadata/.*
+rejects: empty|metadata/.*|executable/windows/dos
 
 stage: SECONDARY
 category: Dynamic Analysis
@@ -18,7 +18,7 @@ file_required: true
 timeout: 300
 disable_cache: false
 enabled: true
-is_external: false
+is_external: true
 licence_count: 0
 
 submission_params:
@@ -42,6 +42,10 @@ submission_params:
     type: bool
     default: true
     value: true
+  - name: allow_internet
+    type: bool
+    default: false
+    value: false
   - name: raw_mode
     type: bool
     default: false
@@ -101,10 +105,28 @@ heuristics:
       clipboard_access: 0
       clipboard_replaced: 500
     attack_id: T1115
+  - heur_id: 8
+    name: Anti-analysis or environment-check APIs
+    description: The sample called APIs used to detect a debugger, sandbox or virtual machine (debugger checks, firmware tables, cursor position, memory size, uptime).
+    filetype: ".*"
+    score: 0
+    signature_score_map:
+      anti_debug: 100
+      environment_check: 0
+    attack_id: T1497
+  - heur_id: 9
+    name: Data decrypted during emulation
+    description: The sample decrypted data through the emulated crypto API (AES via CNG). A large decrypted blob is typically an embedded payload that a crypter or loader unpacks; it is extracted for further analysis.
+    filetype: ".*"
+    score: 0
+    signature_score_map:
+      crypto_operation: 0
+      payload_decrypted: 300
+    attack_id: T1027
 
 docker_config:
   image: kylemc54321/assemblyline-service-speakeasy:$SERVICE_TAG
   cpu_cores: 1
   ram_mb_min: 512
   ram_mb: 3072
-  allow_internet_access: false
+  allow_internet_access: true
