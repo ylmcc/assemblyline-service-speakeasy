@@ -10,6 +10,7 @@ import time
 
 import speakeasy.common as common
 import speakeasy.windows.common as winemu
+import speakeasy.windows.manualbind as manualbind
 import speakeasy.winenv.arch as e_arch
 import speakeasy.winenv.defs.nt.ddk as ddk
 import speakeasy.winenv.defs.windows.kernel32 as k32types
@@ -1028,6 +1029,12 @@ class Kernel32(api.ApiHandler):
                         proc, MEM_ALLOC, base=buf, size=dwSize, type=flAllocationType, protect=argv[3]
                     )
 
+                if dwSize >= 0x10000:
+                    candidates = getattr(self, "_manual_map_candidates", None)
+                    if candidates is None:
+                        candidates = self._manual_map_candidates = set()
+                    candidates.add(buf)
+
                 emu._set_dyn_code_hook(buf, size)
 
                 # In the wild, I noticed some x64 malware samples that
@@ -1443,9 +1450,29 @@ class Kernel32(api.ApiHandler):
             emu.mem_protect(addr, size, new)
             mm.prot = new
             self.mem_write(lpflOldProtect, old_prot.to_bytes(4, "little"))
+            self._try_bind_manual_map(emu, lpAddress)
             return 1
 
         return rv
+
+    def _try_bind_manual_map(self, emu, protected_addr):
+        """VirtualAlloc + write raw bytes + VirtualProtect is the common reflective-loader/crypter
+        pattern for mapping an embedded PE by hand; nothing else in the emulated environment binds
+        that image's imports the way the real OS loader would. Once any candidate allocation gets
+        VirtualProtect'd (the loader finishing a section), check it for a valid, not-yet-bound
+        PE image and bind it -- see windows/manualbind.py."""
+        candidates = getattr(self, "_manual_map_candidates", None)
+        if not candidates:
+            return
+        bound = getattr(self, "_manual_map_bound", None)
+        if bound is None:
+            bound = self._manual_map_bound = set()
+        for base in list(candidates):
+            if base in bound or not (base <= protected_addr < base + 0x10000000):
+                continue
+            if manualbind.looks_like_pe_image(emu, base):
+                bound.add(base)
+                manualbind.bind_manual_image(emu, base)
 
     @apihook("VirtualProtectEx", argc=5)
     def VirtualProtectEx(self, emu, argv, ctx: api.ApiContext = None):
