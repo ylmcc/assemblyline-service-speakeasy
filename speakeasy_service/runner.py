@@ -97,7 +97,7 @@ def run_speakeasy(
         "--analysis-strings" if extract_strings else "--no-analysis-strings",
         "--memory-allow-self-modifying-writes" if allow_self_modifying_writes
         else "--no-memory-allow-self-modifying-writes",
-        "--network-allow-internet" if allow_internet else "--network-no-allow-internet",
+        "--network-allow-internet" if allow_internet else "--no-network-allow-internet",
     ]
     if emulate_children:
         cmd.append("--emulate-children")
