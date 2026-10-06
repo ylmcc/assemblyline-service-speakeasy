@@ -181,21 +181,72 @@ class File:
         return io.BytesIO(b"")
 
 
+class PipeChannel:
+    """
+    The two directions of one named pipe. The server end reads what clients write and
+    vice versa, so data written by one thread is what another thread reads back.
+    """
+
+    def __init__(self, name):
+        self.name = name
+        self.to_server = bytearray()
+        self.to_client = bytearray()
+
+
+def normalize_pipe_name(path):
+    """Return the canonical (lower-case) name of a local named pipe path, else None."""
+    if not path:
+        return None
+    p = path.replace("/", "\\").lower()
+    for prefix in ("\\\\.\\pipe\\", "\\\\?\\pipe\\", "\\??\\pipe\\", "\\device\\namedpipe\\"):
+        if p.startswith(prefix):
+            return p[len(prefix):]
+    return None
+
+
 class Pipe(File):
     """
     Emulated named pipe objects
     """
 
-    def __init__(self, allocator, name, mode, num_instances, out_size, in_size, config=None):
+    def __init__(self, allocator, name, mode, num_instances, out_size, in_size, config=None,
+                 channel=None, side=None):
         super().__init__(allocator, path=name, config=config)
         self.name = name
         self.mode = mode
         self.num_instances = num_instances
         self.out_size = out_size
         self.in_size = in_size
+        self.channel = channel  # PipeChannel for a named pipe end, None for legacy/anonymous pipes
+        self.side = side        # "server" | "client"
 
     def get_handle(self):
         return self.allocator.allocate_pipe_handle()
+
+    def _inbound(self):
+        return self.channel.to_server if self.side == "server" else self.channel.to_client
+
+    def available(self):
+        """Bytes waiting to be read on this end (connected named pipes only)."""
+        return len(self._inbound()) if self.channel else self.get_size()
+
+    def peek(self, size):
+        return bytes(self._inbound()[:size]) if self.channel else b""
+
+    def get_data(self, size=-1, reset_pointer=False):
+        if not self.channel:
+            return super().get_data(size, reset_pointer)
+        buf = self._inbound()
+        n = len(buf) if size is None or size < 0 else min(size, len(buf))
+        data = bytes(buf[:n])
+        del buf[:n]
+        return data
+
+    def add_data(self, data):
+        if not self.channel:
+            return super().add_data(data)
+        (self.channel.to_client if self.side == "server" else self.channel.to_server).extend(data)
+        self.bytes_written += len(data)
 
 
 class FileManager:
@@ -207,6 +258,7 @@ class FileManager:
         super().__init__()
         self.file_handles: dict[int, File] = {}
         self.pipe_handles: dict[int, Pipe] = {}
+        self.pipe_channels: dict[str, PipeChannel] = {}
         self.file_maps: dict[int, FileMap] = {}
 
         # top level config
@@ -406,10 +458,31 @@ class FileManager:
 
     def pipe_open(self, path, mode, num_instances, out_size, in_size):
         hnd = None
-        fconf = self.get_emu_file(path)
-        if not fconf:
-            fconf = {}
-        p = Pipe(self.emu.handle_allocator, path, mode, num_instances, out_size, in_size, config=fconf)
+        name = normalize_pipe_name(path)
+        if name:
+            # Server end of a named pipe: clients that open this name are connected to it.
+            channel = self.pipe_channels.setdefault(name, PipeChannel(path))
+            p = Pipe(self.emu.handle_allocator, path, mode, num_instances, out_size, in_size,
+                     channel=channel, side="server")
+        else:
+            fconf = self.get_emu_file(path)
+            if not fconf:
+                fconf = {}
+            p = Pipe(self.emu.handle_allocator, path, mode, num_instances, out_size, in_size, config=fconf)
+        hnd = p.get_handle()
+        self.pipe_handles.update({hnd: p})
+        return hnd
+
+    def pipe_connect_client(self, path):
+        """
+        CreateFile() on a named pipe path: return a client handle connected to the
+        server created with CreateNamedPipe(), or None if no such server exists.
+        """
+        name = normalize_pipe_name(path)
+        channel = self.pipe_channels.get(name) if name else None
+        if not channel:
+            return None
+        p = Pipe(self.emu.handle_allocator, path, 0, 1, 0, 0, channel=channel, side="client")
         hnd = p.get_handle()
         self.pipe_handles.update({hnd: p})
         return hnd

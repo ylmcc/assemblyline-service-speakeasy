@@ -16,6 +16,7 @@ import speakeasy.winenv.defs.nt.ddk as ddk
 import speakeasy.winenv.defs.windows.kernel32 as k32types
 import speakeasy.winenv.defs.windows.windows as windefs
 from speakeasy.errors import ApiEmuError
+from speakeasy.windows.fileman import normalize_pipe_name
 from speakeasy.profiler_events import (
     FILE_CREATE,
     FILE_READ,
@@ -3838,6 +3839,19 @@ class Kernel32(api.ApiHandler):
         if cd:
             argv[4] = cd
 
+        if normalize_pipe_name(target):
+            # Client end of a named pipe: connect to the CreateNamedPipe() server if it exists.
+            pipe_hnd = emu.pipe_connect_client(target)
+            if pipe_hnd:
+                emu.set_last_error(windefs.ERROR_SUCCESS)
+                self.record_file_access_event(target, "open", disposition=[cd], access=ad)
+                return pipe_hnd
+            if emu.can_yield_run():
+                # Usually the server is a thread that has not run yet (e.g. Cobalt Strike's
+                # artifact kit): let it create the pipe, then retry this CreateFile.
+                emu.yield_current_run(f"CreateFile({target}) before the pipe server exists")
+                return hnd
+
         obj = self.get_object_from_name(target)
         if obj:
             hnd = self.get_object_handle(obj)
@@ -3949,6 +3963,13 @@ class Kernel32(api.ApiHandler):
 
         p = emu.pipe_get(hFile)
         if p:
+            if getattr(p, "channel", None) and not p.available():
+                if emu.can_yield_run():
+                    # Nothing written yet: run the thread that will write it, then retry.
+                    emu.yield_current_run(f"ReadFile on empty pipe {p.name}")
+                    return rv
+                emu.set_last_error(windefs.ERROR_BROKEN_PIPE)  # no writer left to fill it
+                return rv
             data = p.get_data(num_bytes)
             if data and lpBuffer:
                 _write_output(emu, data, lpBuffer, bytes_read)
@@ -4739,10 +4760,19 @@ class Kernel32(api.ApiHandler):
             emu.set_last_error(windefs.ERROR_INVALID_HANDLE)
             return 0
 
+        avail, data = 0, b""
+        if getattr(pipe, "channel", None):
+            avail = pipe.available()
+            if not avail and emu.can_yield_run():
+                emu.yield_current_run(f"PeekNamedPipe on empty pipe {pipe.name}")
+                return 0
+            data = pipe.peek(nBufferSize) if lpBuffer and nBufferSize else b""
+            if data:
+                self.mem_write(lpBuffer, data)
         if lpBytesRead:
-            self.mem_write(lpBytesRead, (0).to_bytes(4, "little"))
+            self.mem_write(lpBytesRead, len(data).to_bytes(4, "little"))
         if lpTotalBytesAvail:
-            self.mem_write(lpTotalBytesAvail, (0).to_bytes(4, "little"))
+            self.mem_write(lpTotalBytesAvail, avail.to_bytes(4, "little"))
         if lpBytesLeftThisMessage:
             self.mem_write(lpBytesLeftThisMessage, (0).to_bytes(4, "little"))
 

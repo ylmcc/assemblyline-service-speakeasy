@@ -8,7 +8,7 @@ This repository vendors the source of Speakeasy:
 
 speakeasy_service/vendor/speakeasy-src is a copy of the upstream `speakeasy` package plus
 the packaging files needed to `pip install` it (pyproject.toml, setup.py, MANIFEST.in),
-with six local modifications (described below). It is built and installed into this service's Docker image (see
+with eight local modifications (described below). It is built and installed into this service's Docker image (see
 Dockerfile) and invoked as a subprocess via its own `speakeasy` CLI entry point.
 
 Local modification -- emulated clipboard. Upstream implements only GetClipboardSequenceNumber
@@ -54,6 +54,25 @@ also lets emulation continue afterwards instead of stopping, so a sample that br
 stale or wrong pointer (e.g. a bad self-locate/header scan) can still reach the rest of its logic.
 Each occurrence is still recorded on the run, and a run that keeps faulting like this in a loop
 (over 1000 recovered reads) still ends, so this cannot spin forever.
+
+Local modification -- GetProcAddress on a real module. Upstream returns an API-hook stub for
+every export it finds, including exports of real mapped PEs such as the sample itself, so a
+sample calling its own export (e.g. Chromium's GetHandleVerifier) jumped into a stub and
+stopped with unsupported_api. speakeasy/winenv/api/usermode/kernel32.py's GetProcAddress now returns the real
+export address for non-decoy modules; decoy (emulated system) DLLs still get stubs.
+
+Local modification -- connected named pipes and cooperative thread switching. Upstream maps
+every \\.\pipe\* path to a canned resource file and never connects CreateNamedPipe's
+server end to a client, and it runs threads one after another, so a thread reading a pipe that
+another thread fills (Cobalt Strike's artifact kit) read canned bytes instead of its payload.
+Changed files: speakeasy/windows/fileman.py (PipeChannel, normalize_pipe_name, server/client
+Pipe ends, FileManager.pipe_connect_client), speakeasy/windows/winemu.py (can_yield_run,
+yield_current_run, _resume_run: a run that would block on a pipe is paused -- CPU context,
+shared stack and TEB page saved -- requeued behind threads that have not run yet, and resumed
+by re-issuing its API call; handle_import_func skips logging/returning for a paused call),
+speakeasy/winenv/api/usermode/kernel32.py (CreateFile, ReadFile, PeekNamedPipe on pipes) and
+speakeasy/winenv/defs/windows/windows.py (pipe error codes). Reading an empty pipe with no
+thread left to fill it fails with ERROR_BROKEN_PIPE instead of blocking forever.
 
 The upstream git submodules deps/win32json (https://github.com/marlersoft/win32json,
 commit 071df4995290b72320010ecfc2fca51946b5c6b4) and deps/phnt

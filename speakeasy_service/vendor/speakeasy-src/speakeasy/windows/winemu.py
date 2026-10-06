@@ -118,6 +118,10 @@ class WindowsEmulator(BinaryEmulator):
         self.page_size: int = 4096
         self.ptr_size: int | None = None
         self.max_runs: int = 100
+        # Cooperative thread switching: a run that would block (e.g. reading an empty pipe
+        # another thread fills) is paused and requeued behind the threads that can unblock it.
+        self.run_switched: bool = False
+        self.max_run_yields: int = 64
         self.symbols: dict[int, str] = {}
         self.ansi_strings: list[str] = []
         self.unicode_strings: list[str] = []
@@ -309,6 +313,12 @@ class WindowsEmulator(BinaryEmulator):
         """
         return self.fileman.pipe_open(path, mode, num_instances, out_size, in_size)
 
+    def pipe_connect_client(self, path):
+        """
+        Connect a client handle to an emulated named pipe server, if one exists
+        """
+        return self.fileman.pipe_connect_client(path)
+
     def does_file_exist(self, path):
         """
         Test if a file handler for a specified emulated file exists
@@ -432,6 +442,9 @@ class WindowsEmulator(BinaryEmulator):
             self.on_emu_complete()
             return None
 
+        if getattr(run, "resume_state", None):
+            return self._resume_run(run)
+
         self.run_complete = False
         self._seh_last_fault = None
         self._seh_repeat_count = 0
@@ -440,6 +453,72 @@ class WindowsEmulator(BinaryEmulator):
         mm = self.get_address_map(self.stack_base - 1)
         self.mem_write(mm.base, b"\x00" * mm.size)
         return self._prepare_run_context(run)
+
+    def can_yield_run(self):
+        """
+        True if the current run may pause on a blocking call: some queued run has not
+        started yet (only such a run can produce what we wait for; waking another paused
+        run that waits too would just ping-pong) and this run has yields left.
+        """
+        run = self.curr_run
+        if run is None or getattr(run, "yields", 0) >= self.max_run_yields:
+            return False
+        return any(not getattr(r, "resume_state", None) for r in self.run_queue)
+
+    def yield_current_run(self, reason=""):
+        """
+        Pause the current run at the API call being handled and switch to the next run.
+        The call is re-issued when the run resumes, so the API handler sees fresh state.
+        Every run shares one stack and one TEB page, so both are saved with the CPU context.
+        """
+        run = self.curr_run
+        stk = self.get_address_map(self.get_stack_ptr())
+        seg = self.fs_addr if self.get_arch() == _arch.ARCH_X86 else self.gs_addr
+        seg_map = self.get_address_map(seg) if seg else None
+        run.resume_state = {
+            "ctx": self.emu_eng.emu.context_save(),  # type: ignore[union-attr]
+            "stack": (stk.base, bytes(self.mem_read(stk.base, stk.size))),
+            "teb": (seg_map.base, bytes(self.mem_read(seg_map.base, seg_map.size))) if seg_map else None,
+            "thread": self.get_current_thread(),
+            "process": self.get_current_process(),
+        }
+        run.yields = getattr(run, "yields", 0) + 1
+        logger.info("* yield: %s paused (%s)", run.type, reason)
+        self.run_queue.append(run)
+        self.run_switched = True
+        self.run_complete = True
+        return self._exec_next_run()
+
+    def _resume_run(self, run):
+        """Restore a run paused by yield_current_run(); execution re-enters its API call."""
+        state, run.resume_state = run.resume_state, None
+        logger.info("* resume: %s", run.type)
+        base, data = state["stack"]
+        self.mem_write(base, data)
+        if state["teb"]:
+            self.mem_write(*state["teb"])
+        self.emu_eng.emu.context_restore(state["ctx"])  # type: ignore[union-attr]
+        self.curr_run = run
+        self.curr_mod = self.get_module_from_addr(run.start_addr)
+        if state["process"]:
+            self.set_current_process(state["process"])
+        if state["thread"]:
+            self.set_current_thread(state["thread"])
+        self.run_complete = False
+        self._seh_last_fault = None
+        self._seh_repeat_count = 0
+        pc = self.get_pc()
+        # context_restore() alone does not make Unicorn leave the translation block it is in
+        # (we are inside a hook of the previous run); writing PC does, as for a normal run start.
+        self.set_pc(pc)
+        if winemu.EMU_RESERVED <= pc <= winemu.EMU_RESERVED_END:
+            # Re-entering an import stub: keep the reserved range unmapped so it traps again.
+            try:
+                self.mem_unmap(winemu.EMU_RESERVED, winemu.EMU_RESERVE_SIZE)
+            except Exception:
+                pass
+            self.emu_hooks_set = True
+        return run
 
     def call(self, addr, params=[]):
         """
@@ -1923,6 +2002,7 @@ class WindowsEmulator(BinaryEmulator):
         Forward imported functions to the corresponding handler (if any).
         """
         imp_api = f"{dll}.{name}"
+        self.run_switched = False
         oret = self.get_ret_address()
         opc = self.get_pc()
         call_pc = self.prev_pc if self.prev_pc != 0 else oret
@@ -1960,6 +2040,12 @@ class WindowsEmulator(BinaryEmulator):
                     self.curr_run.error = error  # type: ignore[union-attr]
                     self.on_run_complete()
                     return
+
+            if self.run_switched:
+                # The handler paused this run (yield_current_run); the call is re-issued on
+                # resume, so don't log it or return from it now -- another run owns the CPU.
+                self.run_switched = False
+                return
 
             ret = self.get_ret_address()
             pc = self.get_pc()

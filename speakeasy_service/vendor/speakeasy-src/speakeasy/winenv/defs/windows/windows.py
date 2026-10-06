@@ -339,3 +339,9 @@ def convert_sid_str_to_struct(ptr_size, sid_str):
         sid_struct.SubAuthority[i] = int(sub_authorities[i])
 
     return sid_struct
+
+# Named pipe errors
+ERROR_BROKEN_PIPE = 109
+ERROR_PIPE_BUSY = 231
+ERROR_NO_DATA = 232
+ERROR_PIPE_CONNECTED = 535
