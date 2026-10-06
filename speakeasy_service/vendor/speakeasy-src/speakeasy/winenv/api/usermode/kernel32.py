@@ -2037,7 +2037,12 @@ class Kernel32(api.ApiHandler):
                     bn = mod.get_base_name()
                     mname, _ = os.path.splitext(bn)
                     entry = next(filter(lambda entry: entry.name == proc, mod.get_exports()), None)
-                    if entry:
+                    if entry and not mod.is_decoy():
+                        # A real mapped PE (the sample itself, or a DLL it loaded): its export is
+                        # real code, so hand back its address, not an API-hook stub. Returning a
+                        # stub made e.g. Chromium-based loaders crash calling their own exports.
+                        rv = entry.address
+                    elif entry:
                         rv = emu.get_proc(mname, proc)
                     elif emu.config.modules.functions_always_exist or emu.has_api_signature(mname, proc):
                         rv = emu.get_proc(mname, proc)
