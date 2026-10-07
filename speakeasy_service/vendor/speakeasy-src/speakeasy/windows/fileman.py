@@ -181,16 +181,47 @@ class File:
         return io.BytesIO(b"")
 
 
+MAX_ARTIFACT_BYTES = 64 * 1024 * 1024  # cap on what is kept per pipe direction / download
+
+
+class Artifact:
+    """
+    Bytes the sample moved during emulation that are not a file it wrote: data passed
+    through a named pipe, or a body it downloaded over a real connection. Reported
+    alongside dropped files; ``path`` says what it was (a pipe path, or the URL).
+    """
+
+    def __init__(self, path, data):
+        self.path = path
+        self.data = bytes(data)
+
+    def get_data(self, size=-1, reset_pointer=False):
+        return self.data
+
+    def get_hash(self):
+        return hashlib.sha256(self.data).hexdigest()
+
+
 class PipeChannel:
     """
     The two directions of one named pipe. The server end reads what clients write and
     vice versa, so data written by one thread is what another thread reads back.
+    Everything written is also logged per direction (reads consume the buffers).
     """
 
     def __init__(self, name):
         self.name = name
         self.to_server = bytearray()
         self.to_client = bytearray()
+        self.log_to_server = bytearray()
+        self.log_to_client = bytearray()
+
+    def artifacts(self):
+        out = []
+        for direction, log in (("server to client", self.log_to_client), ("client to server", self.log_to_server)):
+            if log:
+                out.append(Artifact(f"{self.name} ({direction})", log))
+        return out
 
 
 def normalize_pipe_name(path):
@@ -246,6 +277,8 @@ class Pipe(File):
         if not self.channel:
             return super().add_data(data)
         (self.channel.to_client if self.side == "server" else self.channel.to_server).extend(data)
+        log = self.channel.log_to_client if self.side == "server" else self.channel.log_to_server
+        log.extend(data[: max(0, MAX_ARTIFACT_BYTES - len(log))])
         self.bytes_written += len(data)
 
 
@@ -259,6 +292,7 @@ class FileManager:
         self.file_handles: dict[int, File] = {}
         self.pipe_handles: dict[int, Pipe] = {}
         self.pipe_channels: dict[str, PipeChannel] = {}
+        self.downloads: list[Artifact] = []
         self.file_maps: dict[int, FileMap] = {}
 
         # top level config
@@ -330,7 +364,20 @@ class FileManager:
                 yield (child, is_dir)
 
     def get_dropped_files(self):
-        return [f for f in self.files if f.bytes_written == f.get_size()]
+        dropped = [f for f in self.files if f.bytes_written == f.get_size()]
+        for channel in self.pipe_channels.values():
+            dropped += channel.artifacts()
+        return dropped + self.downloads
+
+    def add_memory_dump(self, label, data):
+        """Record a region of runtime-generated code (e.g. a decoded stager) when it first runs."""
+        if data:
+            self.downloads.append(Artifact(label, data[:MAX_ARTIFACT_BYTES]))
+
+    def add_download(self, url, data):
+        """Record a body fetched over a real connection (never a simulated response)."""
+        if data:
+            self.downloads.append(Artifact(url, data[:MAX_ARTIFACT_BYTES]))
 
     def get_mapping_from_handle(self, handle):
         return self.file_maps.get(handle)

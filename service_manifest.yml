@@ -123,6 +123,27 @@ heuristics:
       crypto_operation: 0
       payload_decrypted: 300
     attack_id: T1027
+  - heur_id: 10
+    name: Payload passed between threads through a named pipe
+    description: One thread wrote data into a named pipe that another thread of the sample read back -- the staging trick Cobalt Strike's artifact kit (and similar loaders) use to keep a decoded payload out of static view. The data is extracted for further analysis.
+    filetype: ".*"
+    score: 0
+    signature_score_map:
+      pipe_transfer: 0
+      pipe_payload: 300
+    attack_id: T1027
+  - heur_id: 11
+    name: File downloaded during emulation
+    description: The sample downloaded content over a real connection during emulation (internet access enabled). The downloaded body is extracted for further analysis.
+    filetype: ".*"
+    score: 100
+    attack_id: T1105
+  - heur_id: 12
+    name: Code generated at runtime and executed
+    description: The sample wrote code into memory it allocated and then ran it -- typically a payload decoded or unpacked at runtime (e.g. shellcode stager). The region is dumped when it first runs and extracted for further analysis.
+    filetype: ".*"
+    score: 250
+    attack_id: T1027.002
 
 docker_config:
   image: kylemc54321/assemblyline-service-speakeasy:$SERVICE_TAG

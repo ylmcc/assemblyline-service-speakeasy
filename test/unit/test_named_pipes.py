@@ -163,3 +163,120 @@ def test_reading_an_empty_pipe_with_no_writer_left_fails_instead_of_hanging():
 
     se, d = _run(build)
     assert _u32(se, d["ret"]) == 0 and _u32(se, d["err"]) == ERROR_BROKEN_PIPE
+
+
+def test_pipe_traffic_is_reported_as_artifacts_after_the_reader_consumed_it():
+    fm = _fileman()
+    fm.files, fm.downloads = [], []
+    srv = fm.pipe_handles[fm.pipe_open("\\\\.\\pipe\\Chan", 3, 1, 0, 0)]
+    cli = fm.pipe_handles[fm.pipe_connect_client("\\\\.\\pipe\\chan")]
+    srv.add_data(b"stage")
+    srv.add_data(b"r!")
+    assert cli.get_data(-1) == b"stager!"                     # the reader drains the buffer...
+    dropped = fm.get_dropped_files()                          # ...but the transcript survives
+    assert [(a.path, a.get_data()) for a in dropped] == [("\\\\.\\pipe\\Chan (server to client)", b"stager!")]
+    fm.add_download("http://203.0.113.9:8080/x.bin", b"body")
+    assert fm.get_dropped_files()[-1].path == "http://203.0.113.9:8080/x.bin"
+
+
+def test_live_http_responses_are_split_into_the_decoded_body():
+    from speakeasy.winenv.livenet import split_http_response
+    assert split_http_response(b"HTTP/1.1 200 OK\r\nContent-Type: a\r\n\r\nBODY") == (200, {"content-type": "a"}, b"BODY")
+    chunked = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n4\r\nstag\r\n2\r\ner\r\n0\r\n\r\n"
+    assert split_http_response(chunked)[2] == b"stager"
+    assert split_http_response(b"\x90\x90 not http") == (0, {}, b"\x90\x90 not http")
+
+
+# ---- service: extraction and sections -------------------------------------------------------
+def _service_with_artifacts(tmp_path, artifacts):
+    import base64
+    import hashlib
+    import json
+    import subprocess
+    import zlib
+    from unittest.mock import patch
+
+    os.environ["SERVICE_MANIFEST_PATH"] = os.path.join(os.path.dirname(__file__), "..", "..", "service_manifest.yml")
+    from speakeasy_service.speakeasy_service import Speakeasy
+    from test.unit.test_clipboard import _Request
+
+    data, eps = {}, []
+    for per_run in artifacts:                       # one list of (path, bytes) per entry point
+        dropped = []
+        for path, blob in per_run:
+            sha = hashlib.sha256(blob).hexdigest()
+            data[sha] = {"compression": "zlib", "encoding": "base64", "size": len(blob),
+                         "data": base64.b64encode(zlib.compress(blob)).decode()}
+            dropped.append({"path": path, "size": len(blob), "sha256": sha, "data_ref": sha})
+        eps.append({"ep_type": "thread", "start_addr": "0x1000", "events": [], "dropped_files": dropped})
+    report = {"report_version": "4.0.0", "arch": "x86", "filetype": "exe", "errors": [],
+              "emulation_total_runtime": 0.1, "data": data, "entry_points": eps}
+
+    def fake_run(cmd, **kwargs):
+        with open(cmd[cmd.index("--output") + 1], "w") as f:
+            json.dump(report, f)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout="", stderr="")
+
+    sample = tmp_path / "s.bin"
+    sample.write_bytes(b"MZ")
+
+    class Svc(Speakeasy):
+        working_directory = str(tmp_path)
+
+    req = _Request(str(sample))
+    extracted = []
+    req.add_extracted = lambda path, name, desc, **kw: extracted.append((name, desc, kw.get("parent_relation"), open(path, "rb").read())) or True
+    with patch("speakeasy_service.runner.subprocess.run", side_effect=fake_run):
+        Svc().execute(req)
+    return {s.title_text: s for s in req.result.sections}, extracted
+
+
+def test_service_extracts_the_pipe_payload_once_using_its_fullest_copy(tmp_path):
+    from assemblyline_v4_service.common.task import PARENT_RELATION
+    pipe = "\\\\.\\pipe\\MSSE-1-server (server to client)"
+    stager = bytes(range(256)) * 3                             # synthetic 768-byte "stager"
+    sections, extracted = _service_with_artifacts(tmp_path, [
+        [(pipe, stager[:100])],                                # reported mid-transfer by an earlier run
+        [(pipe, stager)],
+        [(pipe, stager)],                                      # and again by a later run
+    ])
+    assert len(extracted) == 1
+    name, desc, relation, body = extracted[0]
+    assert body == stager and relation == PARENT_RELATION.DYNAMIC
+    assert name.startswith("pipe_MSSE-1-server") and "named pipe" in desc
+    section = sections["Payloads passed between threads through named pipes"]
+    assert section.heuristic.heur_id == 10 and section.heuristic.score == 300
+    assert "Files dropped during emulation" not in sections
+
+
+def test_service_extracts_downloads_as_downloaded_and_tags_the_url(tmp_path):
+    from assemblyline_v4_service.common.task import PARENT_RELATION
+    url = "http://203.0.113.9:8080/payload.bin"
+    sections, extracted = _service_with_artifacts(tmp_path, [[(url, b"downloaded body"), ("C:\\drop.txt", b"x")]])
+    by_desc = {d.split(" ")[0]: (n, r, b) for n, d, r, b in extracted}
+    assert by_desc["Downloaded"][1] == PARENT_RELATION.DOWNLOADED and by_desc["Downloaded"][2] == b"downloaded body"
+    assert by_desc["Downloaded"][0].endswith("_payload.bin")
+    assert by_desc["File"][1] == PARENT_RELATION.DYNAMIC
+    section = sections["Files downloaded during emulation (real connections)"]
+    assert section.heuristic.heur_id == 11 and section.tags == {"network.dynamic.uri": [url]}
+    assert "Files dropped during emulation" in sections
+
+
+def test_service_extracts_runtime_code_as_a_memory_dump(tmp_path):
+    from assemblyline_v4_service.common.task import PARENT_RELATION
+    region = "memory 0x50000-0x50300 (code generated at runtime, api.VirtualAlloc.0x50000)"
+    code = b"\xfc\xe8" + bytes(range(1, 255)) * 3
+    sections, extracted = _service_with_artifacts(tmp_path, [[(region, code)]])
+    (name, desc, relation, body), = extracted
+    assert relation == PARENT_RELATION.MEMDUMP and body == code and name.startswith("memdump_0x50000_")
+    section = sections["Code generated at runtime and executed (decoded payloads)"]
+    assert section.heuristic.heur_id == 12 and section.heuristic.score == 250
+
+
+def test_canned_simulated_responses_are_never_dumped_as_payloads():
+    from speakeasy.windows.winemu import _is_canned_response
+    root = os.path.join(os.path.dirname(__file__), "..", "..", "speakeasy_service", "vendor", "speakeasy-src",
+                        "speakeasy", "resources", "web", "default.bin")
+    canned = open(root, "rb").read().rstrip(b"\x00")
+    assert _is_canned_response(canned) and _is_canned_response(canned + b"\x90" * 32)
+    assert not _is_canned_response(b"\xfc\xe8" + bytes(range(64)))

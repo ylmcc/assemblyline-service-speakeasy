@@ -8,7 +8,7 @@ This repository vendors the source of Speakeasy:
 
 speakeasy_service/vendor/speakeasy-src is a copy of the upstream `speakeasy` package plus
 the packaging files needed to `pip install` it (pyproject.toml, setup.py, MANIFEST.in),
-with eight local modifications (described below). It is built and installed into this service's Docker image (see
+with nine local modifications (described below). It is built and installed into this service's Docker image (see
 Dockerfile) and invoked as a subprocess via its own `speakeasy` CLI entry point.
 
 Local modification -- emulated clipboard. Upstream implements only GetClipboardSequenceNumber
@@ -73,6 +73,17 @@ by re-issuing its API call; handle_import_func skips logging/returning for a pau
 speakeasy/winenv/api/usermode/kernel32.py (CreateFile, ReadFile, PeekNamedPipe on pipes) and
 speakeasy/winenv/defs/windows/windows.py (pipe error codes). Reading an empty pipe with no
 thread left to fill it fails with ERROR_BROKEN_PIPE instead of blocking forever.
+
+Local modification -- payload artifacts. Speakeasy reported only files the sample wrote. It
+now also reports, through the same dropped-files list: everything written into a named pipe
+(per direction, as "<pipe> (server to client)"), the body of anything downloaded over a real
+connection (internet access enabled; path is the URL), and the bytes of runtime-generated code
+the first time it runs ("memory 0x..."), skipping Speakeasy's own canned simulated responses.
+Changed files: speakeasy/windows/fileman.py (Artifact, pipe transcripts, add_download,
+add_memory_dump), speakeasy/windows/winemu.py (_fire_dyn_code_hooks, _is_canned_response),
+speakeasy/winenv/api/usermode/wininet.py and speakeasy/winenv/livenet.py
+(split_http_response). The latter also fixes the live-fetch path handing the sample the raw
+HTTP status line and headers in front of the body: WinInet returns only the de-chunked body.
 
 The upstream git submodules deps/win32json (https://github.com/marlersoft/win32json,
 commit 071df4995290b72320010ecfc2fca51946b5c6b4) and deps/phnt

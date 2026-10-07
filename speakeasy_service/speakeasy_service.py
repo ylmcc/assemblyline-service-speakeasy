@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from urllib.parse import urlparse
 
 from assemblyline.odm.models.ontology.results import MalwareConfig
 from assemblyline_v4_service.common.base import ServiceBase
@@ -34,6 +35,23 @@ from speakeasy_service.runner import resolve_data_ref, run_speakeasy
 
 _CROSS_PROCESS_EVENTS = {"mem_alloc", "mem_write", "mem_protect", "mem_free", "thread_create", "thread_inject"}
 _NETWORK_EVENTS = {"net_dns", "net_traffic", "net_http"}
+
+# A pipe transfer this large is a payload (a stager is a few hundred bytes), not chatter.
+PIPE_PAYLOAD_MIN_BYTES = 256
+_PIPE_PATH = re.compile(r"^\\\\[.?]\\pipe\\|^\\\?\?\\pipe\\|^\\device\\namedpipe\\", re.IGNORECASE)
+
+
+def artifact_kind(path: str) -> str:
+    """What a Speakeasy dropped-file entry is: data passed through a named pipe, a body
+    downloaded over a real connection (path is its URL), runtime-generated code dumped when
+    it first ran ("memory 0x..."), or a file the sample wrote."""
+    if _PIPE_PATH.match(path or ""):
+        return "pipe"
+    if (path or "").lower().startswith(("http://", "https://")):
+        return "download"
+    if (path or "").startswith("memory 0x"):
+        return "memory"
+    return "file"
 
 
 _B58 = "[1-9A-HJ-NP-Za-km-z]"
@@ -153,22 +171,73 @@ class Speakeasy(ServiceBase):
             injection_table.set_heuristic(heur2)
             result.add_section(injection_table)
 
-        dropped_count = 0
+        # Speakeasy re-reports every artifact at the end of each run, so the same path can
+        # appear several times, growing as a pipe fills: keep the largest copy of each.
+        artifacts: dict = {}
         for ep in entry_points:
             for dropped in ep.get("dropped_files") or []:
-                data = resolve_data_ref(report, dropped.get("data_ref", ""))
-                if data is None:
-                    continue
-                out_path = os.path.join(self.working_directory, f"dropped_{dropped['sha256']}.bin")
-                with open(out_path, "wb") as f:
-                    f.write(data)
-                display_name = os.path.basename(dropped.get("path", dropped["sha256"]).replace("\\", "/"))
+                path = dropped.get("path") or dropped.get("sha256", "")
+                if dropped.get("size", 0) >= artifacts.get(path, {}).get("size", -1):
+                    artifacts[path] = dropped
+
+        dropped_count = 0
+        pipe_table = ResultTableSection("Payloads passed between threads through named pipes")
+        pipe_heur = Heuristic(10)
+        download_table = ResultTableSection("Files downloaded during emulation (real connections)")
+        memory_table = ResultTableSection("Code generated at runtime and executed (decoded payloads)")
+        for path, dropped in artifacts.items():
+            data = resolve_data_ref(report, dropped.get("data_ref", ""))
+            if data is None:
+                continue
+            sha = dropped["sha256"]
+            out_path = os.path.join(self.working_directory, f"artifact_{sha}.bin")
+            with open(out_path, "wb") as f:
+                f.write(data)
+            kind = artifact_kind(path)
+            if kind == "pipe":
+                pipe_name = path.split("\\")[-1]
                 request.add_extracted(
-                    out_path, f"{dropped['sha256']}_{display_name}",
-                    f"File written by the sample during emulation: {dropped.get('path')}",
+                    out_path, f"pipe_{re.sub(r'[^A-Za-z0-9_.-]+', '_', pipe_name)}_{sha[:12]}.bin",
+                    f"Data sent through named pipe {path} during emulation (e.g. a staged payload)",
+                    parent_relation=PARENT_RELATION.DYNAMIC,
+                )
+                pipe_table.add_row(TableRow(pipe=path, size=len(data), sha256=sha))
+                pipe_heur.add_signature_id("pipe_payload" if len(data) >= PIPE_PAYLOAD_MIN_BYTES else "pipe_transfer")
+            elif kind == "download":
+                name = os.path.basename(urlparse(path).path) or "download"
+                request.add_extracted(
+                    out_path, f"{sha[:12]}_{name}",
+                    f"Downloaded from {path} during emulation (real connection)",
+                    parent_relation=PARENT_RELATION.DOWNLOADED,
+                )
+                download_table.add_row(TableRow(url=path, size=len(data), sha256=sha))
+                download_table.add_tag("network.dynamic.uri", path)
+            elif kind == "memory":
+                base = path.split()[1].split("-")[0]
+                request.add_extracted(
+                    out_path, f"memdump_{base}_{sha[:12]}.bin",
+                    f"Code the sample generated at runtime and then executed ({path}), e.g. a decoded stager",
+                    parent_relation=PARENT_RELATION.MEMDUMP,
+                )
+                memory_table.add_row(TableRow(region=path.split(" (")[0].removeprefix("memory "), size=len(data),
+                                              sha256=sha, origin=path.split(" (", 1)[1].rstrip(")")))
+            else:
+                display_name = os.path.basename(path.replace("\\", "/"))
+                request.add_extracted(
+                    out_path, f"{sha}_{display_name}",
+                    f"File written by the sample during emulation: {path}",
                     parent_relation=PARENT_RELATION.DYNAMIC,
                 )
                 dropped_count += 1
+        if pipe_table.body:
+            pipe_table.set_heuristic(pipe_heur)
+            result.add_section(pipe_table)
+        if memory_table.body:
+            memory_table.set_heuristic(12, signature="runtime_code")
+            result.add_section(memory_table)
+        if download_table.body:
+            download_table.set_heuristic(11, signature="downloaded_file")
+            result.add_section(download_table)
         if dropped_count:
             dropped_section = ResultSection(
                 "Files dropped during emulation",
@@ -185,6 +254,7 @@ class Speakeasy(ServiceBase):
             for ev in network_events[:max_rows]:
                 net_table.add_row(TableRow(
                     event=ev["event"], server=ev.get("server", ""), port=ev.get("port", ""),
+                    request=(ev.get("headers") or "").split("\n", 1)[0].strip(),
                     query=ev.get("query", ""), response=ev.get("response", ""),
                 ))
                 heur4.add_signature_id(ev["event"])

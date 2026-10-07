@@ -152,3 +152,36 @@ def fetch_http(ip: str, port: int, secure: bool, request: bytes,
         except (NameError, OSError):
             pass
     return b"".join(chunks) if chunks else None
+
+
+def split_http_response(raw: bytes) -> tuple[int, dict, bytes]:
+    """Split a raw HTTP/1.x response into (status code, lower-cased headers, body), decoding
+    ``Transfer-Encoding: chunked`` -- WinInet hands a caller only the decoded body, never the
+    status line or headers. Anything unparseable is returned whole as the body (status 0)."""
+    head, sep, body = raw.partition(b"\r\n\r\n")
+    if not sep or not head.startswith(b"HTTP/"):
+        return 0, {}, raw
+    lines = head.decode("latin-1").split("\r\n")
+    try:
+        status = int(lines[0].split()[1])
+    except (IndexError, ValueError):
+        status = 0
+    headers = {}
+    for line in lines[1:]:
+        k, _, v = line.partition(":")
+        if k:
+            headers[k.strip().lower()] = v.strip()
+    if "chunked" in headers.get("transfer-encoding", "").lower():
+        out, rest = bytearray(), body
+        while rest:
+            size_line, sep, rest = rest.partition(b"\r\n")
+            try:
+                size = int(size_line.split(b";")[0].strip() or b"0", 16)
+            except ValueError:
+                break
+            if not sep or size == 0:
+                break
+            out += rest[:size]
+            rest = rest[size + 2:]
+        body = bytes(out)
+    return status, headers, body

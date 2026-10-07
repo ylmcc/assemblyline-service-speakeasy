@@ -76,6 +76,29 @@ class BootstrapPhase(IntEnum):
     FULL_SETUP_READY = 3
 
 
+MIN_DYN_CODE_DUMP = 16                 # ignore trivial trampolines
+MAX_DYN_CODE_DUMP = 16 * 1024 * 1024
+_CANNED_RESPONSES: list[bytes] | None = None
+
+
+def _is_canned_response(data: bytes) -> bool:
+    """True if ``data`` is (or starts with) one of Speakeasy's built-in simulated responses
+    (resources/web, resources/files) -- e.g. a fake "stage 2" served by the simulated network,
+    which must never be reported as the sample's real payload."""
+    global _CANNED_RESPONSES
+    if _CANNED_RESPONSES is None:
+        _CANNED_RESPONSES = []
+        root = os.path.join(os.path.dirname(os.path.dirname(__file__)), "resources")
+        for sub in ("web", "files"):
+            d = os.path.join(root, sub)
+            for name in os.listdir(d) if os.path.isdir(d) else []:
+                with open(os.path.join(d, name), "rb") as f:
+                    blob = f.read().rstrip(b"\x00")
+                if len(blob) >= 8:
+                    _CANNED_RESPONSES.append(blob)
+    return any(data.startswith(c) or c.startswith(data) for c in _CANNED_RESPONSES)
+
+
 class WindowsEmulator(BinaryEmulator):
     """
     Base class providing emulation of all Windows modules and shellcode.
@@ -122,6 +145,7 @@ class WindowsEmulator(BinaryEmulator):
         # another thread fills) is paused and requeued behind the threads that can unblock it.
         self.run_switched: bool = False
         self.max_run_yields: int = 64
+        self._dumped_dyn_code: set[int] = set()
         self.symbols: dict[int, str] = {}
         self.ansi_strings: list[str] = []
         self.unicode_strings: list[str] = []
@@ -453,6 +477,23 @@ class WindowsEmulator(BinaryEmulator):
         mm = self.get_address_map(self.stack_base - 1)
         self.mem_write(mm.base, b"\x00" * mm.size)
         return self._prepare_run_context(run)
+
+    def _fire_dyn_code_hooks(self, addr):
+        """Also keep the bytes of runtime-generated code the first time it runs: that is the
+        unpacked/decoded payload (e.g. a stager decoded into VirtualAlloc'd memory)."""
+        super()._fire_dyn_code_hooks(addr)
+        try:
+            mm = self.get_address_map(addr)
+            if mm is None or mm.base in self._dumped_dyn_code:
+                return
+            self._dumped_dyn_code.add(mm.base)
+            data = bytes(self.mem_read(mm.base, min(mm.size, MAX_DYN_CODE_DUMP))).rstrip(b"\x00")
+            if len(data) < MIN_DYN_CODE_DUMP or _is_canned_response(data):
+                return
+            self.fileman.add_memory_dump(
+                f"memory 0x{mm.base:x}-0x{mm.base + len(data):x} (code generated at runtime, {mm.tag})", data)
+        except Exception:
+            logger.debug("dyn code dump failed at 0x%x", addr, exc_info=True)
 
     def can_yield_run(self):
         """

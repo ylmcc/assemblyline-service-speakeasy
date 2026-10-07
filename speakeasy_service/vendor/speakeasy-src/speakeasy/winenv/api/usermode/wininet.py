@@ -260,11 +260,11 @@ class Wininet(api.ApiHandler):
         self.record_http_event(srv, port, headers=req_str, body=body, secure=req.is_secure())
 
         if getattr(emu.config.network, "allow_internet", False):
-            self._try_live_fetch(req, srv, port, req_str, body)
+            self._try_live_fetch(emu, req, srv, port, req_str, body)
 
         return rv
 
-    def _try_live_fetch(self, req, server, port, header_text, body):
+    def _try_live_fetch(self, emu, req, server, port, header_text, body):
         """Best-effort real HTTP round trip. On any failure req.response is left untouched, so
         get_response() falls back to the configured simulated response as before."""
         ip = livenet.resolve_public(server, port)
@@ -276,7 +276,12 @@ class Wininet(api.ApiHandler):
         request = wire_headers.encode("latin-1", errors="replace") + b"\r\n\r\n" + body
         raw = livenet.fetch_http(ip, port, req.is_secure(), request)
         if raw:
-            req.response = BytesIO(raw)
+            # WinInet gives the caller only the (de-chunked) body, never status line/headers.
+            _status, _headers, body = livenet.split_http_response(raw)
+            req.response = BytesIO(body)
+            scheme = "https" if req.is_secure() else "http"
+            path = getattr(getattr(req, "objname", None), "path", "") or "/"
+            emu.get_file_manager().add_download(f"{scheme}://{server}:{port}{path}", body)
 
     @apihook("InternetErrorDlg", argc=5, conv=_arch.CALL_CONV_STDCALL)
     def InternetErrorDlg(self, emu, argv, ctx: api.ApiContext = None):
