@@ -56,3 +56,11 @@ def test_dos_fragments_are_rejected_but_real_pes_are_accepted():
     for pe_type in ("executable/windows/pe64", "executable/windows/pe32", "executable/windows/dll64"):
         assert re.fullmatch(manifest["accepts"], pe_type)
         assert not re.fullmatch(manifest["rejects"], pe_type)
+
+
+def test_heuristic_attack_ids_are_lists():
+    """AL's Rust service-server rejects a scalar attack_id ("invalid type: string, expected a
+    sequence") and with it the whole service registration -- new versions and heuristics never land."""
+    for heur in _manifest()["heuristics"]:
+        if "attack_id" in heur:
+            assert isinstance(heur["attack_id"], list), heur["heur_id"]

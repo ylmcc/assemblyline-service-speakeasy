@@ -490,8 +490,10 @@ class WindowsEmulator(BinaryEmulator):
             data = bytes(self.mem_read(mm.base, min(mm.size, MAX_DYN_CODE_DUMP))).rstrip(b"\x00")
             if len(data) < MIN_DYN_CODE_DUMP or _is_canned_response(data):
                 return
+            thread = self.get_current_thread()
+            tid = f"; first run by tid {thread.tid}" if thread is not None and getattr(thread, "tid", None) else ""
             self.fileman.add_memory_dump(
-                f"memory 0x{mm.base:x}-0x{mm.base + len(data):x} (code generated at runtime, {mm.tag})", data)
+                f"memory 0x{mm.base:x}-0x{mm.base + len(data):x} (code generated at runtime, {mm.tag}{tid})", data)
         except Exception:
             logger.debug("dyn code dump failed at 0x%x", addr, exc_info=True)
 

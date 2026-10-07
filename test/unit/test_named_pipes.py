@@ -280,3 +280,60 @@ def test_canned_simulated_responses_are_never_dumped_as_payloads():
     canned = open(root, "rb").read().rstrip(b"\x00")
     assert _is_canned_response(canned) and _is_canned_response(canned + b"\x90" * 32)
     assert not _is_canned_response(b"\xfc\xe8" + bytes(range(64)))
+
+
+def test_repeating_xor_key_is_recovered_from_before_and_after_bytes():
+    from speakeasy_service.speakeasy_service import repeating_xor_key
+    plain = b"\xfc\xe8" + bytes(range(2, 200))
+    key = b"\x11\x22\x33\x44"
+    enc = bytes(b ^ key[i % 4] for i, b in enumerate(plain))
+    assert repeating_xor_key(enc, plain) == key
+    assert repeating_xor_key(enc + b"\x99", plain[:-1]) == key     # dump trimmed / sizes differ by a byte
+    assert repeating_xor_key(plain, plain) is None                   # a copy, not a decode
+    import hashlib
+    a = b"".join(hashlib.sha256(bytes([i])).digest() for i in range(4))
+    b = b"".join(hashlib.sha256(bytes([i + 100])).digest() for i in range(4))
+    assert repeating_xor_key(a, b) is None                           # unrelated
+
+
+def test_runtime_code_row_shows_its_decode_and_what_its_thread_did(tmp_path):
+    import base64, hashlib, json, subprocess, zlib
+    from unittest.mock import patch
+    from speakeasy_service.speakeasy_service import Speakeasy
+    from test.unit.test_clipboard import _Request
+
+    plain = b"\xfc\xe8" + bytes(range(2, 250))
+    key = b"\xa1\xb2\xc3\xd4"
+    enc = bytes(b ^ key[i % 4] for i, b in enumerate(plain))
+    pipe = "\\\\.\\pipe\\stage-1 (server to client)"
+    region = "memory 0x50000-0x500fc (code generated at runtime, api.VirtualAlloc.0x50000; first run by tid 77)"
+    data, dropped = {}, []
+    for path, blob in ((pipe, enc), (region, plain)):
+        sha = hashlib.sha256(blob).hexdigest()
+        data[sha] = {"compression": "zlib", "encoding": "base64", "size": len(blob),
+                     "data": base64.b64encode(zlib.compress(blob)).decode()}
+        dropped.append({"path": path, "size": len(blob), "sha256": sha, "data_ref": sha})
+    http = {"event": "net_http", "server": "203.0.113.5", "port": 8080, "pos": {"pc": 0},
+            "headers": "GET /a/b.js HTTP/1.1\nHost: x"}
+    report = {"report_version": "4.0.0", "arch": "x86", "filetype": "exe", "errors": [], "data": data,
+              "emulation_total_runtime": 0.1, "entry_points": [
+                  {"ep_type": "module_entry", "start_addr": "0x401000", "tid": 1, "events": [], "dropped_files": dropped},
+                  {"ep_type": "thread", "start_addr": "0x401500", "tid": 77, "events": [http], "dropped_files": dropped}]}
+
+    def fake_run(cmd, **kw):
+        json.dump(report, open(cmd[cmd.index("--output") + 1], "w"))
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    (tmp_path / "s.bin").write_bytes(b"MZ")
+
+    class Svc(Speakeasy):
+        working_directory = str(tmp_path)
+
+    req = _Request(str(tmp_path / "s.bin"))
+    with patch("speakeasy_service.runner.subprocess.run", side_effect=fake_run):
+        Svc().execute(req)
+    section = next(s for s in req.result.sections if s.title_text.startswith("Code generated at runtime"))
+    row = json.loads(section.body)[0]
+    assert row["decoded_from"] == f"{pipe} XOR key a1b2c3d4 (4 bytes)"
+    assert row["behaviour"] == "GET http://203.0.113.5:8080/a/b.js"
+    assert section.tags == {"network.dynamic.uri": ["http://203.0.113.5:8080/a/b.js"]}

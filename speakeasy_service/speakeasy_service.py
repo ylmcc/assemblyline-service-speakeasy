@@ -41,6 +41,39 @@ PIPE_PAYLOAD_MIN_BYTES = 256
 _PIPE_PATH = re.compile(r"^\\\\[.?]\\pipe\\|^\\\?\?\\pipe\\|^\\device\\namedpipe\\", re.IGNORECASE)
 
 
+def repeating_xor_key(encoded: bytes, decoded: bytes, max_period: int = 32) -> bytes | None:
+    """If ``decoded`` is ``encoded`` XORed with a short repeating key, return that key. The
+    sample's own decode loop is invisible to API tracing, but with the bytes before (e.g. what
+    went through a pipe) and after (the code it then ran) the key falls out of encoded ^ decoded."""
+    n = min(len(encoded), len(decoded))
+    if n < 16:
+        return None
+    k = bytes(a ^ b for a, b in zip(encoded[:n], decoded[:n]))
+    if not any(k):
+        return None                                   # identical: copied, not decoded
+    for period in range(1, max_period + 1):
+        if all(k[i] == k[i % period] for i in range(period, n)):
+            return k[:period]
+    return None
+
+
+def thread_behaviour(ep: dict) -> tuple[list[str], list[str]]:
+    """Network activity of one emulated thread, as readable lines plus the URIs it used."""
+    lines, uris = [], []
+    for ev in ep.get("events") or []:
+        if ev.get("event") == "net_http":
+            first = (ev.get("headers") or "").split("\n", 1)[0].split()
+            method, path = (first[0], first[1]) if len(first) >= 2 else ("HTTP", "/")
+            uri = f"http://{ev.get('server')}:{ev.get('port')}{path}"
+            lines.append(f"{method} {uri}")
+            uris.append(uri)
+        elif ev.get("event") == "net_dns":
+            lines.append(f"DNS {ev.get('query')}")
+        elif ev.get("event") == "net_traffic" and ev.get("type") == "connect":
+            lines.append(f"connect {ev.get('proto', '')} {ev.get('server')}:{ev.get('port')}")
+    return list(dict.fromkeys(lines)), list(dict.fromkeys(uris))
+
+
 def artifact_kind(path: str) -> str:
     """What a Speakeasy dropped-file entry is: data passed through a named pipe, a body
     downloaded over a real connection (path is its URL), runtime-generated code dumped when
@@ -214,13 +247,28 @@ class Speakeasy(ServiceBase):
                 download_table.add_tag("network.dynamic.uri", path)
             elif kind == "memory":
                 base = path.split()[1].split("-")[0]
+                decoded_from = []
+                for other_path, other in artifacts.items():
+                    if artifact_kind(other_path) in ("pipe", "download"):
+                        other_data = resolve_data_ref(report, other.get("data_ref", "")) or b""
+                        key = repeating_xor_key(other_data, data)
+                        if key:
+                            decoded_from.append(f"{other_path} XOR key {key.hex()} ({len(key)} bytes)")
+                tid = re.search(r"first run by tid (\d+)", path)
+                ep = next((e for e in entry_points if tid and str(e.get("tid")) == tid.group(1)), None)
+                behaviour, uris = thread_behaviour(ep) if ep else ([], [])
                 request.add_extracted(
                     out_path, f"memdump_{base}_{sha[:12]}.bin",
                     f"Code the sample generated at runtime and then executed ({path}), e.g. a decoded stager",
                     parent_relation=PARENT_RELATION.MEMDUMP,
                 )
-                memory_table.add_row(TableRow(region=path.split(" (")[0].removeprefix("memory "), size=len(data),
-                                              sha256=sha, origin=path.split(" (", 1)[1].rstrip(")")))
+                memory_table.add_row(TableRow(
+                    region=path.split(" (")[0].removeprefix("memory "), size=len(data), sha256=sha,
+                    decoded_from="; ".join(decoded_from) or "-",
+                    behaviour="; ".join(behaviour) or "-",
+                ))
+                for uri in uris:
+                    memory_table.add_tag("network.dynamic.uri", uri)
             else:
                 display_name = os.path.basename(path.replace("\\", "/"))
                 request.add_extracted(
