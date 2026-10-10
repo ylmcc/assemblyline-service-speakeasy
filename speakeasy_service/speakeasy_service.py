@@ -297,13 +297,17 @@ class Speakeasy(ServiceBase):
 
         network_events = [ev for ev in all_events if ev["event"] in _NETWORK_EVENTS]
         if network_events:
-            net_table = ResultTableSection("Emulated network activity (simulated, not real traffic)")
+            net_table = ResultTableSection(
+                "Network activity (real requests to public addresses; see real_fetch)"
+                if request.get_param("allow_internet") else
+                "Emulated network activity (simulated, not real traffic)")
             heur4 = Heuristic(4)
             for ev in network_events[:max_rows]:
                 net_table.add_row(TableRow(
                     event=ev["event"], server=ev.get("server", ""), port=ev.get("port", ""),
                     request=(ev.get("headers") or "").split("\n", 1)[0].strip(),
                     query=ev.get("query", ""), response=ev.get("response", ""),
+                    real_fetch=ev.get("live_result") or "",
                 ))
                 heur4.add_signature_id(ev["event"])
             net_table.set_heuristic(heur4)

@@ -124,11 +124,26 @@ def open_udp() -> LiveSocket:
 
 def fetch_http(ip: str, port: int, secure: bool, request: bytes,
                 timeout: float = READ_TIMEOUT, max_bytes: int = MAX_RESPONSE_BYTES) -> Optional[bytes]:
-    """One blocking HTTP round trip: connect, send ``request`` verbatim, read until the peer
-    closes or ``max_bytes``/``timeout`` is hit, return the raw response bytes (headers + body) or
-    None on any failure. Matches WinInet's own synchronous, blocking call shape."""
+    """One blocking HTTP round trip: connect, send ``request`` verbatim, read until the response
+    is complete, the peer closes, or ``max_bytes``/``timeout`` is hit; return the raw response
+    bytes (headers + body) or None if nothing was received. Matches WinInet's own synchronous,
+    blocking call shape."""
+    return fetch_http_ex(ip, port, secure, request, timeout, max_bytes)[0]
+
+
+def fetch_http_ex(ip: str, port: int, secure: bool, request: bytes,
+                  timeout: float = READ_TIMEOUT,
+                  max_bytes: int = MAX_RESPONSE_BYTES) -> tuple[Optional[bytes], str]:
+    """:func:`fetch_http`, plus a short human-readable note on how the round trip went (for the
+    report: "why was there no payload?"). Bytes already received are kept when the read later
+    times out -- a keep-alive server that never closes the socket after a complete response
+    must not cost us the response."""
     if not is_public_address(ip):
-        return None
+        return None, "blocked: not a public address"
+    chunks = []
+    total = 0
+    note = ""
+    raw = None
     try:
         raw = socket.create_connection((ip, port), timeout=CONNECT_TIMEOUT)
         if secure:
@@ -136,22 +151,68 @@ def fetch_http(ip: str, port: int, secure: bool, request: bytes,
             raw = ctx.wrap_socket(raw, server_hostname=ip)
         raw.settimeout(timeout)
         raw.sendall(request)
-        chunks = []
-        total = 0
         while total < max_bytes:
             chunk = raw.recv(min(65536, max_bytes - total))
             if not chunk:
                 break
             chunks.append(chunk)
             total += len(chunk)
-    except OSError:
-        return None
+            if response_complete(b"".join(chunks)):
+                break
+        else:
+            note = f"truncated at {max_bytes} bytes"
+    except socket.timeout:
+        note = "read timed out" if chunks else f"timed out ({'read' if raw else 'connect'})"
+    except OSError as exc:
+        reason = exc.strerror or exc.__class__.__name__
+        note = f"read error: {reason}" if chunks else f"connection failed: {reason}"
     finally:
         try:
-            raw.close()
-        except (NameError, OSError):
+            if raw is not None:
+                raw.close()
+        except OSError:
             pass
-    return b"".join(chunks) if chunks else None
+    if not chunks:
+        return None, note or "no response (connection closed by server)"
+    return b"".join(chunks), note
+
+
+def response_complete(raw: bytes) -> bool:
+    """True once ``raw`` holds a whole HTTP/1.x response, judged by Content-Length or the
+    chunked terminator. A response with neither is only complete when the peer closes."""
+    head, sep, body = raw.partition(b"\r\n\r\n")
+    if not sep:
+        return False
+    lines = head.decode("latin-1").split("\r\n")
+    try:
+        status = int(lines[0].split()[1])
+    except (IndexError, ValueError):
+        return False
+    if status in (204, 304) or 100 <= status < 200:
+        return True
+    headers = {}
+    for line in lines[1:]:
+        k, _, v = line.partition(":")
+        headers[k.strip().lower()] = v.strip()
+    if "chunked" in headers.get("transfer-encoding", "").lower():
+        rest = body
+        while True:
+            size_line, nl, rest = rest.partition(b"\r\n")
+            if not nl:
+                return False
+            try:
+                size = int(size_line.split(b";")[0].strip() or b"x", 16)
+            except ValueError:
+                return True  # malformed: split_http_response will hand it back whole
+            if size == 0:
+                return True
+            if len(rest) < size + 2:
+                return False
+            rest = rest[size + 2:]
+    try:
+        return len(body) >= int(headers["content-length"])
+    except (KeyError, ValueError):
+        return False
 
 
 def split_http_response(raw: bytes) -> tuple[int, dict, bytes]:

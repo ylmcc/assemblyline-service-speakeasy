@@ -97,3 +97,43 @@ def test_closesocket_closes_the_live_socket_too():
     h.netman.get_socket.return_value = sock_obj
     h.closesocket(emu, [1])
     live.close.assert_called_once()
+
+
+def test_live_fetch_forces_connection_close_and_records_the_outcome(monkeypatch):
+    from io import BytesIO
+    from speakeasy.winenv.api.usermode import wininet
+
+    sent = []
+    monkeypatch.setattr(livenet, "resolve_public", lambda server, port: "203.0.113.9")
+    monkeypatch.setattr(livenet, "fetch_http_ex", lambda ip, port, secure, request: (
+        sent.append(request) or (b"HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc", "")))
+    headers = "GET /jquery-3.3.1.slim.min.js HTTP/1.1\nHost: 203.0.113.9:8080\nConnection: Keep-Alive\n"
+    evt = SimpleNamespace(event="net_http", server="203.0.113.9", port=8080, headers=headers, live_result=None)
+    emu = _emu(True)
+    emu.get_current_run.return_value = SimpleNamespace(events=[evt])
+    req = SimpleNamespace(is_secure=lambda: False, response=None,
+                          objname=SimpleNamespace(path="/jquery-3.3.1.slim.min.js"))
+    h = object.__new__(wininet.Wininet)
+    h._try_live_fetch(emu, req, "203.0.113.9", 8080, headers, b"")
+
+    wire = sent[0].decode()
+    assert "Connection: close\r\n\r\n" in wire and "Keep-Alive" not in wire
+    assert req.response.read() == b"abc"
+    assert evt.live_result == "203.0.113.9: HTTP 200, 3 body bytes"
+    emu.get_file_manager().add_download.assert_called_once_with(
+        "http://203.0.113.9:8080/jquery-3.3.1.slim.min.js", b"abc")
+
+
+def test_live_fetch_failure_is_recorded_and_leaves_the_simulated_response(monkeypatch):
+    from speakeasy.winenv.api.usermode import wininet
+
+    monkeypatch.setattr(livenet, "resolve_public", lambda server, port: "203.0.113.9")
+    monkeypatch.setattr(livenet, "fetch_http_ex", lambda *a: (None, "timed out (connect)"))
+    evt = SimpleNamespace(event="net_http", server="203.0.113.9", port=80, headers="GET / HTTP/1.1\n", live_result=None)
+    emu = _emu(True)
+    emu.get_current_run.return_value = SimpleNamespace(events=[evt])
+    req = SimpleNamespace(is_secure=lambda: False, response="simulated")
+    h = object.__new__(wininet.Wininet)
+    h._try_live_fetch(emu, req, "203.0.113.9", 80, "GET / HTTP/1.1\n", b"")
+    assert req.response == "simulated"
+    assert evt.live_result == "203.0.113.9: timed out (connect)"

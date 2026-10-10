@@ -626,6 +626,9 @@ class NetHttpEvent(Event):
     port: int = Field(description="HTTP server port.")
     proto: str = Field(description="Transport/protocol label, e.g. tcp.http or tcp.https.")
     headers: str | None = Field(default=None, description="Serialized HTTP request headers, when available.")
+    live_result: str | None = Field(
+        default=None, description="Outcome of the real request when allow_internet is on (status, size or error)."
+    )
     body_ref: str | None = Field(
         default=None,
         description="Reference into the top-level report ``data`` store for the captured HTTP body bytes.",

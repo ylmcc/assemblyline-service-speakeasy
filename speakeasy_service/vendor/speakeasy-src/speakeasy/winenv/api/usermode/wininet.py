@@ -266,22 +266,43 @@ class Wininet(api.ApiHandler):
 
     def _try_live_fetch(self, emu, req, server, port, header_text, body):
         """Best-effort real HTTP round trip. On any failure req.response is left untouched, so
-        get_response() falls back to the configured simulated response as before."""
+        get_response() falls back to the configured simulated response as before. The outcome
+        is written onto the matching net_http report event as ``live_result``."""
         ip = livenet.resolve_public(server, port)
         if not ip:
+            self._record_live_result(emu, server, port, header_text, "not attempted: did not resolve to a public address")
             return
         # format_http_request() uses bare \n; a real server expects \r\n and a blank-line
-        # terminator ahead of the body.
-        wire_headers = header_text.replace("\r\n", "\n").replace("\n", "\r\n").rstrip("\r\n")
-        request = wire_headers.encode("latin-1", errors="replace") + b"\r\n\r\n" + body
-        raw = livenet.fetch_http(ip, port, req.is_secure(), request)
-        if raw:
-            # WinInet gives the caller only the (de-chunked) body, never status line/headers.
-            _status, _headers, body = livenet.split_http_response(raw)
-            req.response = BytesIO(body)
-            scheme = "https" if req.is_secure() else "http"
-            path = getattr(getattr(req, "objname", None), "path", "") or "/"
-            emu.get_file_manager().add_download(f"{scheme}://{server}:{port}{path}", body)
+        # terminator ahead of the body. Always ask for Connection: close on the real wire: with
+        # Keep-Alive (INTERNET_FLAG_KEEP_CONNECTION, set by Metasploit/Cobalt Strike stagers) the
+        # server leaves the socket open after the response and the read could only end on timeout.
+        lines = [ln for ln in header_text.replace("\r\n", "\n").rstrip("\n").split("\n")
+                 if not ln.lower().startswith("connection:")]
+        lines.append("Connection: close")
+        request = "\r\n".join(lines).encode("latin-1", errors="replace") + b"\r\n\r\n" + body
+        raw, note = livenet.fetch_http_ex(ip, port, req.is_secure(), request)
+        if not raw:
+            self._record_live_result(emu, server, port, header_text, f"{ip}: {note}")
+            return
+        # WinInet gives the caller only the (de-chunked) body, never status line/headers.
+        status, _headers, body = livenet.split_http_response(raw)
+        result = f"{ip}: HTTP {status or '?'}, {len(body)} body bytes"
+        self._record_live_result(emu, server, port, header_text, result + (f" ({note})" if note else ""))
+        req.response = BytesIO(body)
+        scheme = "https" if req.is_secure() else "http"
+        path = getattr(getattr(req, "objname", None), "path", "") or "/"
+        emu.get_file_manager().add_download(f"{scheme}://{server}:{port}{path}", body)
+
+    def _record_live_result(self, emu, server, port, headers, result):
+        try:
+            run = emu.get_current_run()
+            for evt in reversed(run.events):
+                if getattr(evt, "event", None) == "net_http" and evt.server == server and evt.port == port \
+                        and (evt.headers or "") == (headers or ""):
+                    evt.live_result = result
+                    return
+        except Exception:  # reporting only: never let it break emulation
+            pass
 
     @apihook("InternetErrorDlg", argc=5, conv=_arch.CALL_CONV_STDCALL)
     def InternetErrorDlg(self, emu, argv, ctx: api.ApiContext = None):
